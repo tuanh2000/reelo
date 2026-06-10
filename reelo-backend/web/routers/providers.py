@@ -26,6 +26,10 @@ _TASK_TO_FIELD = {
 # Per-provider UI hints (note) the YAML does not carry as a field.
 _PROVIDER_NOTES = {
     "omnivoice": "Giọng clone — cần tải lên âm thanh mẫu + transcript (không cần key)",
+    "claude-cli": (
+        "BYO tài khoản Claude — dán OAuth token từ `claude setup-token` "
+        "(dùng subscription của chính bạn, không cần API key trả theo token)"
+    ),
 }
 
 

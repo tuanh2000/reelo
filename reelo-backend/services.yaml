@@ -80,6 +80,29 @@ services:
       # Opus 4.8 = 0.005/0.025; Haiku 4.5 = 0.001/0.005 if a deployment switches default.
       write-script: { per_1k_input: 0.003, per_1k_output: 0.015 }
 
+  claude-cli:
+    display_name: "Claude (đăng nhập subscription)"
+    client: "clients.claude_cli.ClaudeCliClient"
+    # BYO subscription, NOT a metered Anthropic API key: the worker shells out to
+    # the `claude` CLI in headless mode authenticated by the USER'S OWN Claude
+    # subscription OAuth token (from `claude setup-token`). cost_tier=free because
+    # Reelo never bills tokens — usage is on the user's own Claude plan.
+    cost_tier: free
+    auth: { type: key, key_ref: "claude_oauth" }
+    key_help_url: "https://docs.anthropic.com/en/docs/claude-code/setup#authentication"
+    tasks:
+      write-script:
+        models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+        default_model: "claude-sonnet-4-6"   # balanced default for scriptwriting
+        # The CLI has no response_format; Module 1's sentinel/JSON-from-text
+        # parser handles structured output, so we advertise JSON mode as false.
+        supports_json_mode: false
+        supports_system_prompt: true          # via --system-prompt
+        timeout: 300
+    pricing:
+      # Billed to the user's Claude subscription, not Reelo — record zero cost.
+      write-script: { per_1k_input: 0.0, per_1k_output: 0.0 }
+
   deepseek:
     display_name: "DeepSeek"
     client: "clients.openai_compat.OpenAIStyleClient"
@@ -263,6 +286,9 @@ routing:
   # BYOK-aware fallback: only providers the user actually has a key for are used.
   # Stub providers are intentionally excluded.
   fallback:
+    # claude-cli is intentionally NOT here: it needs a user's BYO subscription
+    # token (claude setup-token) and shells out to the `claude` CLI, so it is an
+    # explicit Setup choice rather than an auto-fallback.
     write-script: ["claude", "chatgpt", "gemini", "deepseek"]
     generate-voice: ["eleven", "edge", "hf"]
     # web-commons is keyless, so it's always usable as a fallback; placed after

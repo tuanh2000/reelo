@@ -189,6 +189,26 @@ def test_save_key_empty_rejected(m3_client):
     assert resp.status_code == 400
 
 
+def test_save_claude_oauth_token_maps_key_ref(m3_client, monkeypatch):
+    """claude-cli provider id -> claude_oauth key_ref; validate_key mocked (no CLI)."""
+    from clients.claude_cli import ClaudeCliClient
+
+    async def ok(self, ctx):
+        return True
+
+    monkeypatch.setattr(ClaudeCliClient, "validate_key", ok)
+
+    resp = m3_client.post("/keys", json={"provider": "claude-cli", "key": "sk-ant-oat01-abc"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["key_ref"] == "claude_oauth"  # mapped via auth.key_ref
+    assert body["valid"] is True
+    # stored encrypted under claude_oauth, never as plaintext
+    row = m3_client.api_store.records[(FAKE_USER_ID, "claude_oauth")]  # type: ignore[attr-defined]
+    assert isinstance(row.ciphertext, bytes)
+    assert b"sk-ant-oat01-abc" not in row.ciphertext
+
+
 def test_delete_key(m3_client):
     m3_client.api_store.records[(FAKE_USER_ID, "elevenlabs")] = _Row(  # type: ignore[attr-defined]
         user_id=FAKE_USER_ID, key_ref="elevenlabs", ciphertext=b"x", nonce=b"y", valid=True

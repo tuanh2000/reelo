@@ -629,16 +629,20 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {needKey.map(({ g, opt }) => (
+            {needKey.map(({ g, opt }) => {
+              // claude-cli stores a Claude subscription OAuth token (from
+              // `claude setup-token`), not a metered API key — adjust the copy.
+              const isOauthToken = opt.id === "claude-cli";
+              return (
               <div key={`${g}-${opt.id}`}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
                   <span className="label" style={{ margin: 0 }}>
-                    {opt.name}
+                    {isOauthToken ? `${opt.name} — OAuth token` : opt.name}
                   </span>
                   <Badge tone="neutral">{PROVIDERS[g].label}</Badge>
                   {opt.cost_tier === "free" && (
                     <Badge tone="green" icon="gift">
-                      Free tier (vẫn cần key)
+                      {isOauthToken ? "Dùng subscription của bạn" : "Free tier (vẫn cần key)"}
                     </Badge>
                   )}
                   {savedKeys[opt.id] && (
@@ -654,15 +658,23 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
                       className="subtle"
                       style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4, marginLeft: "auto" }}
                     >
-                      <Icon name="external-link" size={12} /> Lấy key
+                      <Icon name="external-link" size={12} /> {isOauthToken ? "Hướng dẫn lấy token" : "Lấy key"}
                     </a>
                   )}
                 </div>
+                {isOauthToken && (
+                  <div className="subtle" style={{ fontSize: 12, marginBottom: 7, lineHeight: 1.5 }}>
+                    Đăng nhập tài khoản Claude của chính bạn rồi chạy{" "}
+                    <code style={{ fontSize: 12 }}>claude setup-token</code> để tạo OAuth token,
+                    dán vào đây. Reelo dùng token này gọi <code style={{ fontSize: 12 }}>claude</code> CLI bằng
+                    subscription của bạn — không phải API key trả theo token.
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 9 }}>
                   <input
                     className="field mono"
                     type="password"
-                    placeholder="sk-•••••••••••••••••••••"
+                    placeholder={isOauthToken ? "sk-ant-oat01-•••••••••••••••" : "sk-•••••••••••••••••••••"}
                     value={keys[opt.id] || ""}
                     onChange={(e) => setKeys((k) => ({ ...k, [opt.id]: e.target.value }))}
                     style={{ fontSize: 13 }}
@@ -672,7 +684,8 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
                   </Button>
                 </div>
               </div>
-            ))}
+              );
+            })}
             <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 7 }}>
               <Icon name="lock" size={13} /> Key được mã hóa (AES-256-GCM) và lưu theo tài khoản của bạn.
             </div>

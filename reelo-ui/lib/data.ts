@@ -191,6 +191,7 @@ export const PROVIDERS: Record<string, ProviderGroup> = {
     options: [
       { id: "gemini", name: "Gemini (Google AI Studio)", cost_tier: "free", requires_key: true, key_help_url: "https://aistudio.google.com/apikey", note: "Google" },
       { id: "claude", name: "Claude (Anthropic)", cost_tier: "paid", requires_key: true, key_help_url: "https://console.anthropic.com/settings/keys", note: "Anthropic" },
+      { id: "claude-cli", name: "Claude (đăng nhập subscription)", cost_tier: "free", requires_key: true, key_help_url: "https://docs.anthropic.com/en/docs/claude-code/setup#authentication", note: "BYO tài khoản Claude" },
       { id: "chatgpt", name: "ChatGPT (OpenAI)", cost_tier: "paid", requires_key: true, key_help_url: "https://platform.openai.com/api-keys", note: "OpenAI" },
       { id: "deepseek", name: "DeepSeek", cost_tier: "paid", requires_key: true, key_help_url: "https://platform.deepseek.com/api_keys", note: "Rất rẻ" },
     ],

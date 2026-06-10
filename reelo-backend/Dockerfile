@@ -17,10 +17,22 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# ffmpeg: required by render.py (Module 2) + the skill voice/stub clients.
-# (build-essential not needed — all wheels are prebuilt for slim/py3.11.)
+# System deps:
+# - ffmpeg: required by render.py (Module 2) + the skill voice/stub clients.
+# - nodejs/npm + @anthropic-ai/claude-code: the `claude` CLI the worker shells
+#   out to for the BYO-subscription script provider (clients/claude_cli.py).
+#   curl/ca-certificates are needed to add the NodeSource apt repo.
+# (build-essential not needed — all Python wheels are prebuilt for slim/py3.11.)
+# NOTE: bundling Node + the Claude Code CLI makes the image noticeably larger;
+# this is accepted for the claude-cli provider.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
