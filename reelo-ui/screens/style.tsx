@@ -4,45 +4,159 @@
 
 import React from "react";
 import { Icon, Badge, Button, Card, Placeholder } from "@/components/ui";
-import { SERIES, type Nav, type Route } from "@/lib/data";
+import { type Nav, type Route } from "@/lib/data";
+import {
+  inferStyle,
+  approveSeries,
+  specToSeries,
+  ApiError,
+  type ImageStyleSpec,
+  type VoiceConfigSpec,
+  type SeriesConfig,
+} from "@/lib/api";
 
 interface StylePreset {
   id: string;
   name: string;
   desc: string;
+  // A short English base prompt fed to the image provider (D4 base_prompt).
+  base_prompt: string;
   palette: string[];
 }
 
 const STYLE_PRESETS: StylePreset[] = [
-  { id: "cinematic", name: "Điện ảnh", desc: "Tông màu tương phản, ánh sáng kịch tính, chiều sâu trường ảnh nông. Cảm giác như một bộ phim bom tấn.", palette: ["#0e1726", "#1f3a5f", "#c2703d", "#e8a87c", "#f2e8d5"] },
-  { id: "documentary", name: "Tài liệu", desc: "Màu trung thực, tông đất trầm ấm, ánh sáng tự nhiên. Phù hợp nội dung lịch sử, khoa học nghiêm túc.", palette: ["#2b2620", "#5c4a36", "#9c7a4d", "#c9b48a", "#ece3d0"] },
-  { id: "animated", name: "Hoạt hình", desc: "Màu phẳng tươi sáng, đường nét rõ, độ bão hòa cao. Vui mắt, thân thiện, dễ tiếp cận.", palette: ["#ff5d5d", "#ffb443", "#3ec6ff", "#7b61ff", "#1dd3a7"] },
-  { id: "minimal", name: "Tối giản", desc: "Bảng màu đơn sắc với một điểm nhấn, nhiều khoảng trống. Sạch sẽ, hiện đại, cao cấp.", palette: ["#111114", "#3a3a40", "#8a8a92", "#d9d9de", "#ef3e36"] },
-  { id: "vintage", name: "Cổ điển", desc: "Sắc nâu sepia, grain nhẹ, ám vàng hoài niệm. Gợi không khí xưa cũ, trầm mặc.", palette: ["#3a2c1e", "#6b4f33", "#a8824f", "#d8b77a", "#efe4c8"] },
-  { id: "noir", name: "Tương phản cao", desc: "Đen trắng mạnh mẽ với điểm nhấn đỏ. Bí ẩn, căng thẳng, gây ấn tượng tức thì.", palette: ["#0a0a0c", "#26262b", "#73737a", "#e6e6ea", "#e8332b"] },
+  { id: "cinematic", name: "Điện ảnh", desc: "Tông màu tương phản, ánh sáng kịch tính, chiều sâu trường ảnh nông. Cảm giác như một bộ phim bom tấn.", base_prompt: "cinematic film still, dramatic lighting, high contrast, shallow depth of field, anamorphic", palette: ["#0e1726", "#1f3a5f", "#c2703d", "#e8a87c", "#f2e8d5"] },
+  { id: "documentary", name: "Tài liệu", desc: "Màu trung thực, tông đất trầm ấm, ánh sáng tự nhiên. Phù hợp nội dung lịch sử, khoa học nghiêm túc.", base_prompt: "documentary photography, natural lighting, earthy warm tones, realistic, archival", palette: ["#2b2620", "#5c4a36", "#9c7a4d", "#c9b48a", "#ece3d0"] },
+  { id: "animated", name: "Hoạt hình", desc: "Màu phẳng tươi sáng, đường nét rõ, độ bão hòa cao. Vui mắt, thân thiện, dễ tiếp cận.", base_prompt: "flat illustration, vivid saturated colors, clean bold outlines, friendly cartoon style", palette: ["#ff5d5d", "#ffb443", "#3ec6ff", "#7b61ff", "#1dd3a7"] },
+  { id: "minimal", name: "Tối giản", desc: "Bảng màu đơn sắc với một điểm nhấn, nhiều khoảng trống. Sạch sẽ, hiện đại, cao cấp.", base_prompt: "minimalist design, monochrome with single accent color, lots of negative space, modern, premium", palette: ["#111114", "#3a3a40", "#8a8a92", "#d9d9de", "#ef3e36"] },
+  { id: "vintage", name: "Cổ điển", desc: "Sắc nâu sepia, grain nhẹ, ám vàng hoài niệm. Gợi không khí xưa cũ, trầm mặc.", base_prompt: "vintage photograph, sepia tones, subtle film grain, nostalgic warm cast, aged", palette: ["#3a2c1e", "#6b4f33", "#a8824f", "#d8b77a", "#efe4c8"] },
+  { id: "noir", name: "Tương phản cao", desc: "Đen trắng mạnh mẽ với điểm nhấn đỏ. Bí ẩn, căng thẳng, gây ấn tượng tức thì.", base_prompt: "high-contrast black and white noir, single red accent, moody, dramatic shadows", palette: ["#0a0a0c", "#26262b", "#73737a", "#e6e6ea", "#e8332b"] },
 ];
 
 interface Upload {
   id: string;
   label: string;
+  file: File;
 }
 
 export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
+  const draft = route.draft; // present in the create flow
+  const series = route.series; // present when re-styling an existing series
+  const headerName = series?.name || draft?.name || "Series mới";
+
   const [preset, setPreset] = React.useState("cinematic");
   const [uploads, setUploads] = React.useState<Upload[]>([]);
   const [drag, setDrag] = React.useState(false);
   const cur = STYLE_PRESETS.find((p) => p.id === preset)!;
 
-  // TODO(backend): send uploaded reference images to api.inferStyle() to get a
-  // real palette + description instead of using the static preset data.
-  const addUpload = () => setUploads((u) => [...u, { id: "u" + Date.now(), label: `Ảnh mẫu ${u.length + 1}` }]);
+  // Style inferred from uploaded reference images (POST /style/infer). Falls back
+  // to the chosen preset's palette/description when no images were uploaded.
+  const [inferred, setInferred] = React.useState<{ palette: string[]; description: string } | null>(null);
+  const [inferring, setInferring] = React.useState(false);
+  const [approving, setApproving] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const aspect = draft?.aspect || "16:9";
+
+  // Run inference whenever the set of uploaded reference images changes.
+  const runInfer = React.useCallback((files: File[]) => {
+    if (files.length === 0) {
+      setInferred(null);
+      return;
+    }
+    setInferring(true);
+    setError(null);
+    inferStyle(files)
+      .then(setInferred)
+      .catch((e) => {
+        setError(e instanceof ApiError ? e.message : "Không suy ra được style từ ảnh mẫu");
+      })
+      .finally(() => setInferring(false));
+  }, []);
+
+  const addFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) {
+      // Drag/drop without files or programmatic click: open the file picker.
+      fileInputRef.current?.click();
+      return;
+    }
+    const added: Upload[] = Array.from(files).map((file, i) => ({
+      id: "u" + Date.now() + "_" + i,
+      label: file.name,
+      file,
+    }));
+    setUploads((u) => {
+      const next = [...u, ...added];
+      runInfer(next.map((x) => x.file));
+      return next;
+    });
+  };
+
+  const removeUpload = (id: string) => {
+    setUploads((u) => {
+      const next = u.filter((x) => x.id !== id);
+      runInfer(next.map((x) => x.file));
+      return next;
+    });
+  };
+
+  // Effective palette/description shown + persisted: inferred (from images) when
+  // available, else the preset's static values.
+  const palette = inferred?.palette?.length ? inferred.palette : cur.palette;
+  const description = inferred?.description || cur.desc;
+
+  // FINAL APPROVE — persist the new series via approveSeries(outline + config),
+  // then go to its real project page. Only runs in the create flow (draft set).
+  const onApply = async () => {
+    if (!draft) {
+      // Editing an existing series' style: no create-flow persistence here yet.
+      nav({ name: "project", ...(series ? { series } : {}), toast: `Đã áp dụng style "${cur.name}"` });
+      return;
+    }
+    setApproving(true);
+    setError(null);
+
+    const image_style: ImageStyleSpec = {
+      preset_id: preset,
+      base_prompt: cur.base_prompt,
+      palette,
+      description,
+      aspect,
+    };
+    const providers = draft.providers || { script: "gemini", image: "web", voice: "edge" };
+    const voice: VoiceConfigSpec = {
+      provider: providers.voice,
+      voice_id: "",
+      mode: "preset",
+    };
+    const config: SeriesConfig = {
+      skill: draft.skill || "explain",
+      language: draft.language || "vi",
+      target_minutes: draft.target_minutes || 10,
+      density: draft.density || "standard",
+      aspect,
+      providers,
+      voice,
+      image_style,
+    };
+
+    try {
+      const spec = await approveSeries(draft.name, draft.topic || draft.name, draft.outline, config);
+      const created = specToSeries(spec);
+      nav({ name: "project", series: created, toast: `Đã lưu series "${created.name}"` });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Lưu series thất bại. Vui lòng thử lại.");
+      setApproving(false);
+    }
+  };
 
   return (
     <div className="page page-wide" style={{ paddingBottom: 40 }}>
       <div style={{ marginBottom: 6 }}>
         <Badge tone="neutral" icon="folder">
-          {series.name}
+          {headerName}
         </Badge>
       </div>
       <div style={{ marginBottom: 24 }}>
@@ -61,6 +175,17 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
             <div className="label" style={{ marginBottom: 10 }}>
               Ảnh tham chiếu
             </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = ""; // allow re-selecting the same file
+              }}
+            />
             <div
               onDragOver={(e) => {
                 e.preventDefault();
@@ -70,9 +195,9 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
               onDrop={(e) => {
                 e.preventDefault();
                 setDrag(false);
-                addUpload();
+                addFiles(e.dataTransfer.files);
               }}
-              onClick={addUpload}
+              onClick={() => fileInputRef.current?.click()}
               style={{
                 border: `2px dashed ${drag ? "var(--brand)" : "var(--border-strong)"}`,
                 background: drag ? "var(--brand-tint)" : "var(--surface-2)",
@@ -111,7 +236,7 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
                   <div key={u.id} style={{ position: "relative" }}>
                     <Placeholder label={u.label} style={{ aspectRatio: "1/1" }} rounded="rounded-lg" />
                     <button
-                      onClick={() => setUploads((us) => us.filter((x) => x.id !== u.id))}
+                      onClick={() => removeUpload(u.id)}
                       style={{
                         position: "absolute",
                         top: 6,
@@ -188,13 +313,14 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
             <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 16 }}>
               <Icon name="sparkles" size={18} style={{ color: "var(--brand)" }} />
               <h3 style={{ fontSize: 15.5 }}>Style được suy ra</h3>
+              {inferring && <Icon name="loader" size={15} style={{ color: "var(--brand)", marginLeft: "auto" }} />}
             </div>
 
             <Placeholder label={`Preview · ${cur.name}`} style={{ aspectRatio: "16/9", marginBottom: 16 }} />
 
             <div className="label">Bảng màu</div>
             <div style={{ display: "flex", gap: 7, marginBottom: 16 }}>
-              {cur.palette.map((c, i) => (
+              {palette.map((c, i) => (
                 <div key={i} style={{ flex: 1 }}>
                   <div style={{ height: 40, background: c, borderRadius: 9, border: "1px solid var(--border)" }} />
                   <div className="mono subtle" style={{ fontSize: 9.5, textAlign: "center", marginTop: 4 }}>
@@ -205,24 +331,34 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
             </div>
 
             <div className="label">Mô tả phong cách</div>
-            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--text-2)", margin: "0 0 16px" }}>{cur.desc}</p>
+            <p style={{ fontSize: 13.5, lineHeight: 1.6, color: "var(--text-2)", margin: "0 0 16px" }}>{description}</p>
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 18 }}>
-              {[uploads.length ? `${uploads.length} ảnh mẫu` : "Từ preset", "16:9", "Nhất quán cả series"].map((t) => (
+              {[uploads.length ? `${uploads.length} ảnh mẫu` : "Từ preset", aspect, "Nhất quán cả series"].map((t) => (
                 <Badge key={t} tone="brand">
                   {t}
                 </Badge>
               ))}
             </div>
 
+            {error && (
+              <div
+                className="subtle"
+                style={{ fontSize: 12.5, color: "var(--danger, #ef3e36)", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <Icon name="alert-triangle" size={13} /> {error}
+              </div>
+            )}
+
             <Button
               variant="primary"
               size="md"
-              icon="check"
+              icon={approving ? "loader" : "check"}
               style={{ width: "100%" }}
-              onClick={() => nav({ name: "project", series, toast: `Đã áp dụng style "${cur.name}"` })}
+              disabled={approving || inferring}
+              onClick={onApply}
             >
-              Áp dụng style này
+              {approving ? "Đang lưu series…" : draft ? "Chốt & Lưu series" : "Áp dụng style này"}
             </Button>
           </Card>
         </div>

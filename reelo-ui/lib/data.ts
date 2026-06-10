@@ -72,6 +72,23 @@ export interface OutlineItem {
   pick: boolean;
 }
 
+// In-progress "create series" draft carried across wizard -> setup -> style ->
+// approve (the screens don't share a store, so it rides on Route.draft). All
+// fields are optional/partial because each screen fills in its slice; the final
+// APPROVE step (style screen) reads the accumulated draft to call approveSeries.
+export interface SeriesDraft {
+  name: string;
+  topic: string;
+  outline: OutlineItem[];
+  // Setup-screen config slice (filled by setup.tsx before reaching style).
+  skill?: string;
+  language?: string;
+  target_minutes?: number;
+  density?: "light" | "standard" | "dense";
+  aspect?: "16:9" | "9:16";
+  providers?: { script: string; image: string; voice: string };
+}
+
 export interface ScriptSegment {
   id: string;
   text: string;
@@ -101,10 +118,18 @@ export interface Route {
     | "project";
   series?: Series;
   episode?: Episode;
+  // Carries the in-progress create-series state through the wizard flow.
+  draft?: SeriesDraft;
   toast?: string;
 }
 
 export type Nav = (r: Route) => void;
+
+// When NEXT_PUBLIC_REQUIRE_AUTH=false (offline mock demo, no backend) the
+// create-series screens fall back to the static SERIES/seed data instead of
+// failing on network errors. Prod (default) always hits the real API.
+export const DEMO_FALLBACK =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_REQUIRE_AUTH) === "false";
 
 export const SKILLS: Skill[] = [
   {

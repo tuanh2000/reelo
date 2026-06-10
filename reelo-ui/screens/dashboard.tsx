@@ -5,7 +5,8 @@
 import React from "react";
 import { Icon, Badge, Button, Card, Progress, Placeholder, Segmented } from "@/components/ui";
 import { Logo3D } from "@/components/logo";
-import { SERIES, EP_STATUS, skillOf, provName, pubCount, type Nav, type Series } from "@/lib/data";
+import { SERIES, EP_STATUS, DEMO_FALLBACK, skillOf, provName, pubCount, type Nav, type Series } from "@/lib/data";
+import { listSeries } from "@/lib/api";
 
 function FeatureChip({ icon, children }: { icon: string; children: React.ReactNode }) {
   return (
@@ -31,7 +32,7 @@ function FeatureChip({ icon, children }: { icon: string; children: React.ReactNo
   );
 }
 
-function Hero({ nav }: { nav: Nav }) {
+function Hero({ nav, demo }: { nav: Nav; demo?: Series }) {
   return (
     <section
       className="card fade-up"
@@ -62,9 +63,11 @@ function Hero({ nav }: { nav: Nav }) {
             <Button variant="primary" size="lg" icon="sparkles" onClick={() => nav({ name: "wizard" })}>
               Tạo series mới
             </Button>
-            <Button variant="secondary" size="lg" icon="play" onClick={() => nav({ name: "workspace", series: SERIES[0] })}>
-              Xem demo
-            </Button>
+            {demo && (
+              <Button variant="secondary" size="lg" icon="play" onClick={() => nav({ name: "workspace", series: demo })}>
+                Xem demo
+              </Button>
+            )}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             <FeatureChip icon="message-square">Tạo series bằng chat</FeatureChip>
@@ -189,15 +192,53 @@ function SeriesCard({ s, nav, delay }: { s: Series; nav: Nav; delay: string }) {
 }
 
 export function Dashboard({ nav }: { nav: Nav }) {
+  // Real series from GET /series. In the offline mock demo
+  // (NEXT_PUBLIC_REQUIRE_AUTH=false) we seed with the static SERIES so the UI is
+  // usable without a backend; prod starts empty and shows whatever the API returns.
+  const [series, setSeries] = React.useState<Series[]>(DEMO_FALLBACK ? SERIES : []);
+  const [loading, setLoading] = React.useState(!DEMO_FALLBACK);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    listSeries()
+      .then((list) => {
+        if (!alive) return;
+        setSeries(list);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        // Offline demo: keep the static seed; prod: surface the error.
+        if (DEMO_FALLBACK) {
+          setSeries(SERIES);
+        } else {
+          setError(e instanceof Error ? e.message : "Không tải được danh sách series");
+          setSeries([]);
+        }
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const totalEpisodes = series.reduce((a, s) => a + s.episodes.length, 0);
+
   return (
     <div className="page">
-      <Hero nav={nav} />
+      <Hero nav={nav} demo={series[0]} />
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
         <div>
           <h2 style={{ fontSize: 22 }}>Series của bạn</h2>
           <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>
-            {SERIES.length} series · {SERIES.reduce((a, s) => a + s.episodes.length, 0)} tập tổng cộng
+            {loading
+              ? "Đang tải danh sách series…"
+              : `${series.length} series · ${totalEpisodes} tập tổng cộng`}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
@@ -212,16 +253,32 @@ export function Dashboard({ nav }: { nav: Nav }) {
         </div>
       </div>
 
+      {error && (
+        <Card style={{ padding: 16, marginBottom: 18, border: "1px solid color-mix(in oklab, var(--danger, #ef3e36) 40%, transparent)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "var(--text-2)" }}>
+            <Icon name="alert-triangle" size={18} style={{ color: "var(--danger, #ef3e36)" }} />
+            {error}
+          </div>
+        </Card>
+      )}
+
+      {loading && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 48, color: "var(--text-3)" }}>
+          <Icon name="loader" size={26} style={{ color: "var(--brand)" }} />
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 18 }}>
-        {SERIES.map((s, i) => (
-          <SeriesCard key={s.id} s={s} nav={nav} delay={`${i * 60}ms`} />
-        ))}
+        {!loading &&
+          series.map((s, i) => (
+            <SeriesCard key={s.id} s={s} nav={nav} delay={`${i * 60}ms`} />
+          ))}
 
         <button
           className="card card-hover fade-up"
           onClick={() => nav({ name: "wizard" })}
           style={{
-            animationDelay: `${SERIES.length * 60}ms`,
+            animationDelay: `${series.length * 60}ms`,
             display: "flex",
             flexDirection: "column",
             alignItems: "center",

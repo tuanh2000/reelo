@@ -4,7 +4,7 @@
 
 import React from "react";
 import { Icon, Badge, Button, Card, TierBadge } from "@/components/ui";
-import { SKILLS, PROVIDERS, SERIES, type Nav, type Route, type Skill, type SkillTemplate, type ProviderOptionData } from "@/lib/data";
+import { SKILLS, PROVIDERS, type Nav, type Route, type Skill, type SkillTemplate, type ProviderOptionData, type SeriesDraft } from "@/lib/data";
 import { getProviders, saveApiKey, uploadMusic, uploadVoiceSample, type ProvidersResponse } from "@/lib/api";
 
 const DENSITY_OPTIONS: { id: "light" | "standard" | "dense"; label: string }[] = [
@@ -187,18 +187,33 @@ function ProviderOption({ opt, active, onClick }: { opt: ProviderOptionData; act
 }
 
 export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
-  const [skill, setSkill] = React.useState(series.skill);
-  const [tmpl, setTmpl] = React.useState(SKILLS.find((s) => s.id === series.skill)!.templates[0].id);
-  const [prov, setProv] = React.useState<{ [k: string]: string }>({ ...series.providers });
+  // Two modes: configuring a brand-new series (route.draft, from the wizard) or
+  // re-editing an existing one (route.series). In create mode there is no series
+  // id yet — the series is persisted later by approveSeries on the Style screen,
+  // so per-series uploads (music / voice sample) are deferred until then.
+  const draft = route.draft;
+  const series = route.series; // undefined in the create flow
+  const headerName = series?.name || draft?.name || "Series mới";
+
+  const initialSkill = series?.skill || draft?.skill || SKILLS[0].id;
+  const initialProviders =
+    series?.providers || draft?.providers || { script: "gemini", image: "web", voice: "edge" };
+
+  const [skill, setSkill] = React.useState(initialSkill);
+  const [tmpl, setTmpl] = React.useState(
+    SKILLS.find((s) => s.id === initialSkill)!.templates[0].id,
+  );
+  const [prov, setProv] = React.useState<{ [k: string]: string }>({ ...initialProviders });
   const [keys, setKeys] = React.useState<{ [k: string]: string }>({});
   const [savedKeys, setSavedKeys] = React.useState<{ [k: string]: boolean }>({});
 
   // New series config fields (Setup screen — integration §6 / risks #9).
-  const [language, setLanguage] = React.useState("vi");
-  const [targetMinutes, setTargetMinutes] = React.useState(10);
-  const [density, setDensity] = React.useState<"light" | "standard" | "dense">("standard");
-  const [aspect, setAspect] = React.useState<"16:9" | "9:16">("16:9");
+  const [language, setLanguage] = React.useState(draft?.language || "vi");
+  const [targetMinutes, setTargetMinutes] = React.useState(draft?.target_minutes || 10);
+  const [density, setDensity] = React.useState<"light" | "standard" | "dense">(
+    draft?.density || "standard",
+  );
+  const [aspect, setAspect] = React.useState<"16:9" | "9:16">(draft?.aspect || "16:9");
   const [musicName, setMusicName] = React.useState<string>("");
 
   // Voice-clone (OmniVoice) sample upload state — shown when voice = omnivoice.
@@ -262,6 +277,9 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   const onMusic = async (file: File | undefined) => {
     if (!file) return;
     setMusicName(file.name);
+    // Per-series upload needs an existing series id; in the create flow it can be
+    // added later from the project screen after approve.
+    if (!series) return;
     try {
       await uploadMusic(series.id, file);
     } catch {
@@ -271,6 +289,11 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
 
   const onSaveVoiceSample = async () => {
     if (!sampleFile || !sampleTranscript.trim()) return;
+    if (!series) {
+      setSampleStatus("error");
+      setSampleError("Hãy lưu series trước rồi tải mẫu giọng (ở trang series).");
+      return;
+    }
     setSampleStatus("saving");
     setSampleError("");
     try {
@@ -282,11 +305,35 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
     }
   };
 
+  // Accumulate the Setup slice into the draft handed forward to the Style screen,
+  // which runs the final approveSeries with outline + this config.
+  const buildNextDraft = (): SeriesDraft | undefined => {
+    if (!draft) return undefined;
+    return {
+      ...draft,
+      skill,
+      language,
+      target_minutes: targetMinutes,
+      density,
+      aspect,
+      providers: {
+        script: prov.script,
+        image: prov.image,
+        voice: prov.voice,
+      },
+    };
+  };
+
+  const goToStyle = () => {
+    const next = buildNextDraft();
+    nav({ name: "style", ...(series ? { series } : {}), ...(next ? { draft: next } : {}) });
+  };
+
   return (
     <div className="page" style={{ paddingBottom: 96 }}>
       <div style={{ marginBottom: 6 }}>
         <Badge tone="neutral" icon="folder">
-          {series.name}
+          {headerName}
         </Badge>
       </div>
       <div style={{ marginBottom: 24 }}>
@@ -653,17 +700,28 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
           <b style={{ color: "var(--text)" }}>{tplObj.name}</b> · {cat.name} ·{" "}
           {needKey.length === 0 ? "Miễn phí" : `${needKey.length} key cần thiết`}
         </div>
-        <Button variant="secondary" size="md" icon="palette" onClick={() => nav({ name: "style", series })}>
-          Chọn style hình ảnh
-        </Button>
-        <Button
-          variant="primary"
-          size="md"
-          icon="check"
-          onClick={() => nav({ name: "project", series, toast: "Đã lưu cấu hình Skill & Provider" })}
-        >
-          Lưu cấu hình
-        </Button>
+        {draft ? (
+          // Create flow: the only forward path is Style, which runs approveSeries.
+          <Button variant="primary" size="md" icon="palette" onClick={goToStyle}>
+            Tiếp tục: chọn style hình ảnh
+          </Button>
+        ) : (
+          <>
+            <Button variant="secondary" size="md" icon="palette" onClick={goToStyle}>
+              Chọn style hình ảnh
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              icon="check"
+              onClick={() =>
+                nav({ name: "project", ...(series ? { series } : {}), toast: "Đã lưu cấu hình Skill & Provider" })
+              }
+            >
+              Lưu cấu hình
+            </Button>
+          </>
+        )}
       </div>
     </div>
   );

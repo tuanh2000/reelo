@@ -71,6 +71,9 @@ export interface SegmentSpec {
   narration: string;
   image_prompt: string;
   image_label: string;
+  // Optional English search keywords for real-photo providers (web-commons).
+  // Backend may omit it (generative providers); kept optional for round-trips.
+  image_query?: string | null;
 }
 export interface EpisodeSpec {
   episode_id: string;
@@ -363,7 +366,9 @@ export async function inferStyle(
   referenceImages: File[],
 ): Promise<{ palette: string[]; description: string }> {
   const form = new FormData();
-  for (const f of referenceImages) form.append("images", f);
+  // FastAPI binds the multipart field to the handler param name; the /style/infer
+  // endpoint expects `reference_images` (web/routers/style.py), NOT `images`.
+  for (const f of referenceImages) form.append("reference_images", f);
   const res = await fetch(`${API_BASE}/style/infer`, {
     method: "POST",
     credentials: "include",

@@ -5,19 +5,23 @@
 import React from "react";
 import { Icon, Badge, Button, Card, ChatBubble } from "@/components/ui";
 import { MiniMark } from "@/components/logo";
-import { SERIES, WIZARD_SEED, type Nav, type OutlineItem } from "@/lib/data";
+import { DEMO_FALLBACK, WIZARD_SEED, type Nav, type OutlineItem, type SeriesDraft } from "@/lib/data";
+import { sendWizardMessage, ApiError } from "@/lib/api";
 
 interface Msg {
   role: "ai" | "user";
   text: string;
 }
 
+const WIZ_GREETING: Msg = {
+  role: "ai",
+  text:
+    'Chào bạn 👋 Mình là trợ lý sản xuất của Reelo. Bạn muốn làm series về chủ đề gì? Cứ nói chung chung cũng được — ví dụ "tôn giáo", "lịch sử La Mã", "vũ trụ"…',
+};
+
+// Demo (offline) seed conversation — only used when NEXT_PUBLIC_REQUIRE_AUTH=false.
 const WIZ_SEED_MSGS: Msg[] = [
-  {
-    role: "ai",
-    text:
-      'Chào bạn 👋 Mình là trợ lý sản xuất của Reelo. Bạn muốn làm series về chủ đề gì? Cứ nói chung chung cũng được — ví dụ "tôn giáo", "lịch sử La Mã", "vũ trụ"…',
-  },
+  WIZ_GREETING,
   { role: "user", text: "Mình muốn làm series giới thiệu các tôn giáo lớn trên thế giới, kiểu học thuật nhưng dễ xem." },
   {
     role: "ai",
@@ -123,10 +127,15 @@ function WizardOutlineItem({
 }
 
 export function WizardScreen({ nav }: { nav: Nav }) {
-  const [msgs, setMsgs] = React.useState<Msg[]>(WIZ_SEED_MSGS);
-  const [outline, setOutline] = React.useState<OutlineItem[]>(WIZARD_SEED);
+  // Demo mode (offline) keeps the canned conversation + seed outline so the UI is
+  // usable with no backend. Prod starts from a single greeting and lets the real
+  // wizard LLM (POST /wizard/message) drive both the reply and the outline.
+  const [msgs, setMsgs] = React.useState<Msg[]>(DEMO_FALLBACK ? WIZ_SEED_MSGS : [WIZ_GREETING]);
+  const [outline, setOutline] = React.useState<OutlineItem[]>(DEMO_FALLBACK ? WIZARD_SEED : []);
+  const [name, setName] = React.useState("Các tôn giáo lớn của thế giới");
   const [input, setInput] = React.useState("");
   const [typing, setTyping] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -135,38 +144,42 @@ export function WizardScreen({ nav }: { nav: Nav }) {
 
   const send = (textArg?: string) => {
     const text = (textArg ?? input).trim();
-    if (!text) return;
+    if (!text || typing) return;
+    // Snapshot history BEFORE adding the new user turn (backend takes prior turns
+    // as context + `idea` as the latest message).
+    const history = msgs.map((m) => ({ role: m.role, text: m.text }));
     setMsgs((m) => [...m, { role: "user", text }]);
     setInput("");
     setTyping(true);
-    // TODO(backend): replace this canned simulation with api.sendWizardMessage()
-    // to drive the chat + outline from the real LLM.
-    setTimeout(() => {
-      setTyping(false);
-      let reply = "Đã cập nhật dàn ý bên phải cho bạn. Bạn muốn chỉnh thêm gì nữa không?";
-      const low = text.toLowerCase();
-      if (low.includes("thêm") || low.includes("vô thần")) {
-        reply = "Mình đã thêm một tập mới vào cuối dàn ý. Bạn xem thử nhé!";
-        setOutline((o) => [
-          ...o,
-          {
-            id: "w" + Date.now(),
-            title: `Tập ${o.length + 1} — Vô thần & thuyết bất khả tri`,
-            desc: "Góc nhìn phi tôn giáo, lịch sử tư tưởng và tranh luận hiện đại.",
-            pick: true,
-          },
+    setError(null);
+
+    sendWizardMessage(text, history)
+      .then(({ reply, outline: nextOutline }) => {
+        setMsgs((m) => [...m, { role: "ai", text: reply }]);
+        // Backend returns the full refined outline when it changed; keep the
+        // user's manual edits otherwise (outline omitted).
+        if (nextOutline) setOutline(nextOutline);
+      })
+      .catch((e) => {
+        const msg =
+          e instanceof ApiError
+            ? e.message
+            : "Không kết nối được trợ lý. Vui lòng thử lại.";
+        setError(msg);
+        setMsgs((m) => [
+          ...m,
+          { role: "ai", text: `⚠️ ${msg}` },
         ]);
-      } else if (low.includes("rút") || low.includes("4 tập")) {
-        reply = "Đã rút gọn xuống 4 tập trọng tâm nhất, bỏ tập có độ trùng lặp cao.";
-        setOutline((o) => o.slice(0, 4));
-      } else if (low.includes("học thuật") || low.includes("giọng")) {
-        reply = "Đã ghi nhận: giọng văn sẽ trang trọng, trích dẫn nguồn sử liệu rõ ràng hơn. Áp dụng cho toàn series.";
-      } else if (low.includes("hook")) {
-        reply = "Tuyệt — mỗi tập sẽ mở đầu bằng một câu hỏi gây tò mò trong 10 giây đầu để giữ chân người xem.";
-      }
-      setMsgs((m) => [...m, { role: "ai", text: reply }]);
-    }, 900);
+      })
+      .finally(() => setTyping(false));
   };
+
+  // Build the draft handed to the Setup screen (and ultimately approveSeries).
+  const buildDraft = (): SeriesDraft => ({
+    name: name.trim() || "Series chưa đặt tên",
+    topic: name.trim(),
+    outline,
+  });
 
   const picked = outline.filter((o) => o.pick).length;
   const toggle = (id: string) => setOutline((o) => o.map((e) => (e.id === id ? { ...e, pick: !e.pick } : e)));
@@ -232,17 +245,26 @@ export function WizardScreen({ nav }: { nav: Nav }) {
               </button>
             ))}
           </div>
+          {error && (
+            <div
+              className="subtle"
+              style={{ padding: "0 18px 8px", fontSize: 12.5, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <Icon name="alert-triangle" size={13} /> {error}
+            </div>
+          )}
           <div style={{ padding: 14, borderTop: "1px solid var(--border)", display: "flex", gap: 10 }}>
             <input
               className="field"
               placeholder="Nhập tin nhắn cho trợ lý…"
               value={input}
+              disabled={typing}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") send();
               }}
             />
-            <Button variant="primary" icon="send" className="btn-icon" onClick={() => send()} />
+            <Button variant="primary" icon="send" className="btn-icon" disabled={typing} onClick={() => send()} />
           </div>
         </Card>
 
@@ -256,7 +278,13 @@ export function WizardScreen({ nav }: { nav: Nav }) {
               </div>
               <Badge tone="brand">{picked}/{outline.length} tập sẽ sản xuất</Badge>
             </div>
-            <input className="field" defaultValue="Các tôn giáo lớn của thế giới" style={{ marginTop: 12, fontWeight: 700 }} />
+            <input
+              className="field"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Tên series…"
+              style={{ marginTop: 12, fontWeight: 700 }}
+            />
           </div>
 
           <div className="scroll-y" style={{ flex: 1, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -290,16 +318,20 @@ export function WizardScreen({ nav }: { nav: Nav }) {
             <div className="muted" style={{ fontSize: 13, flex: 1 }}>
               Ước tính ~{picked * 4} phút nội dung
             </div>
-            <Button variant="secondary" size="md" icon="palette" onClick={() => nav({ name: "style", series: SERIES[0] })}>
-              Chọn style
-            </Button>
             <Button
               variant="primary"
               size="md"
-              icon="check"
-              onClick={() => nav({ name: "setup", series: SERIES[0], toast: "Đã lưu series · cấu hình provider tiếp theo" })}
+              icon="arrow-right"
+              disabled={picked === 0}
+              onClick={() =>
+                nav({
+                  name: "setup",
+                  draft: buildDraft(),
+                  toast: "Dàn ý đã sẵn sàng · cấu hình provider tiếp theo",
+                })
+              }
             >
-              Chốt &amp; Lưu
+              Tiếp tục: cấu hình
             </Button>
           </div>
         </Card>
