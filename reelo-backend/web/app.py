@@ -46,14 +46,20 @@ def create_app() -> FastAPI:
     )
 
     # Session cookie (Authlib stores OAuth state here; we store user_id post-login).
-    app.add_middleware(
-        SessionMiddleware,
+    # In prod the UI (cognal.xyz) and API (api.cognal.xyz) are different hostnames,
+    # so scope the cookie to the parent domain (.cognal.xyz) and mark it Secure.
+    # ``same_site="lax"`` is fine across subdomains of the same site (it only
+    # restricts cross-*site* requests).
+    session_kwargs: dict = dict(
         secret_key=settings.session_secret,
         session_cookie=settings.session_cookie_name,
         max_age=settings.session_max_age,
         same_site="lax",
-        https_only=settings.is_prod,
+        https_only=settings.session_https_only,
     )
+    if settings.session_cookie_domain_or_none:
+        session_kwargs["domain"] = settings.session_cookie_domain_or_none
+    app.add_middleware(SessionMiddleware, **session_kwargs)
 
     # CORS for the reelo-ui dev server (credentials so the session cookie flows).
     app.add_middleware(

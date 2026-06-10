@@ -1,0 +1,58 @@
+# Build context is the repo root, but this .dockerignore applies to the whole
+# context. Keep the backend image lean and reproducible.
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.venv/
+**/.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets / local env (image must never bake these — they come from --env-file)
+.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local object storage + generated output / large media
+.reelo-storage/
+**/.reelo-storage/
+output/
+verify-output/
+**/projects/
+**/clips/
+*.mp4
+*.mov
+*.webm
+
+# Model / HF caches
+**/.cache/
+*.ckpt
+*.safetensors
+
+# Tests are not needed in the runtime image (kept small). Remove this line if
+# you want to `docker run ... pytest` inside the image.
+reelo-backend/tests/
+
+# The UI and the dropped sidecar are not part of the backend image
+reelo-ui/
+gemini-web2api/
+youtuber-ai.zip
+
+# OmniVoice service has its own (GPU) image
+reelo-backend/services/
+
+# Node / OS / editor noise
+node_modules/
+.next/
+.git/
+.DS_Store
+*.swp
+.idea/
+.vscode/

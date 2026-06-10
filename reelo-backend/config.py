@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     session_secret: str = Field(default="dev-insecure-session-secret", alias="SESSION_SECRET")
     session_cookie_name: str = Field(default="reelo_session", alias="SESSION_COOKIE_NAME")
     session_max_age: int = Field(default=1209600, alias="SESSION_MAX_AGE")
+    # Cross-subdomain cookie support: in prod the UI (cognal.xyz) and API
+    # (api.cognal.xyz) are different hostnames, so the session cookie must be
+    # scoped to the parent domain ``.cognal.xyz``. Empty (dev default) = host-only
+    # cookie (localhost), which is correct for same-origin dev.
+    session_cookie_domain: str = Field(default="", alias="SESSION_COOKIE_DOMAIN")
+    # Force the Secure attribute on the session cookie. Empty/unset = derive from
+    # the environment (Secure only in prod). Set explicitly to override.
+    session_secure: bool | None = Field(default=None, alias="SESSION_SECURE")
 
     # ---- Google OAuth -------------------------------------------------------
     google_oauth_client_id: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_ID")
@@ -100,6 +108,22 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
+
+    @property
+    def session_cookie_domain_or_none(self) -> str | None:
+        """Cookie ``Domain`` attribute, or ``None`` for a host-only cookie."""
+        return self.session_cookie_domain or None
+
+    @property
+    def session_https_only(self) -> bool:
+        """Whether the session cookie carries ``Secure``.
+
+        Explicit ``SESSION_SECURE`` wins; otherwise default to Secure in prod
+        only (so http://localhost dev keeps working).
+        """
+        if self.session_secure is not None:
+            return self.session_secure
+        return self.is_prod
 
     @property
     def storage_endpoint_url_or_none(self) -> str | None:

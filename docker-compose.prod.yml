@@ -1,0 +1,209 @@
+# =============================================================================
+# Reelo production stack — runs on the home server (Docker + NVIDIA GPU).
+#
+# Tag-driven: the release workflow pulls images at ${IMAGE_TAG} (the git tag,
+# e.g. v1.2.3) and runs `docker compose up -d`. All secrets come from an
+# --env-file (NEVER committed) at /opt/reelo/.env on the server. See DEPLOY.md.
+#
+# Expose: cloudflared (token-managed tunnel) — no host ports are published for
+# web/ui. Public hostnames are configured in the Cloudflare dashboard:
+#   cognal.xyz      -> http://reelo-ui:3000
+#   api.cognal.xyz  -> http://web:8000
+#
+# Validate locally:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod.example config
+# =============================================================================
+
+x-reelo-backend-env: &reelo-backend-env
+  # ---- App ----
+  REELO_ENV: prod
+  REELO_DEBUG: "false"
+  REELO_BASE_URL: ${REELO_BASE_URL:-https://api.cognal.xyz}
+  REELO_CORS_ORIGINS: ${CORS_ORIGINS:-https://cognal.xyz}
+  # ---- Postgres / Redis ----
+  DATABASE_URL: ${DATABASE_URL}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  # ---- Crypto / session ----
+  REELO_MASTER_KEY: ${REELO_MASTER_KEY}
+  SESSION_SECRET: ${SESSION_SECRET}
+  SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-.cognal.xyz}
+  SESSION_SECURE: "true"
+  # ---- Google OAuth ----
+  GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+  GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+  GOOGLE_OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URL:-https://api.cognal.xyz/auth/callback}
+  OAUTH_POST_LOGIN_REDIRECT: ${OAUTH_POST_LOGIN_REDIRECT:-https://cognal.xyz}
+  # ---- Object storage (MinIO, S3-compatible) ----
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+  STORAGE_BUCKET: ${S3_BUCKET:-reelo-assets}
+  STORAGE_REGION: ${S3_REGION:-us-east-1}
+  STORAGE_ENDPOINT_URL: ${S3_ENDPOINT:-http://minio:9000}
+  STORAGE_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+  STORAGE_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+  # ---- OmniVoice (GPU voice clone) ----
+  OMNIVOICE_URL: ${OMNIVOICE_URL:-http://omnivoice:8002}
+
+services:
+  # ---- FastAPI web (API) ---------------------------------------------------
+  web:
+    image: ghcr.io/tuanh2000/reelo-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment: *reelo-backend-env
+    command: ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [reelo]
+
+  # ---- Arq worker (same image, different command) --------------------------
+  worker:
+    image: ghcr.io/tuanh2000/reelo-backend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment: *reelo-backend-env
+    command: ["arq", "worker.settings.WorkerSettings"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks: [reelo]
+
+  # ---- Next.js UI ----------------------------------------------------------
+  reelo-ui:
+    image: ghcr.io/tuanh2000/reelo-ui:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # NEXT_PUBLIC_API_BASE is baked at build time (see release.yml); nothing to
+    # set here at runtime.
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks: [reelo]
+
+  # ---- Postgres ------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-reelo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-reelo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reelo} -d ${POSTGRES_DB:-reelo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [reelo]
+
+  # ---- Redis ---------------------------------------------------------------
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [reelo]
+
+  # ---- MinIO (S3-compatible object storage) --------------------------------
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [reelo]
+
+  # ---- MinIO bucket bootstrap (runs once, creates the bucket, then exits) ---
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      mc mb --ignore-existing local/\"$$S3_BUCKET\" &&
+      echo 'bucket ready: '\"$$S3_BUCKET\"
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-reelo-assets}
+    restart: "no"
+    networks: [reelo]
+
+  # ---- OmniVoice (GPU voice clone microservice) ----------------------------
+  omnivoice:
+    image: ghcr.io/tuanh2000/reelo-omnivoice:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # Requires nvidia-container-toolkit on the host.
+    gpus: all
+    environment:
+      OMNIVOICE_DEVICE: ${OMNIVOICE_DEVICE:-cuda:0}
+      OMNIVOICE_MODEL: ${OMNIVOICE_MODEL:-k2-fsa/OmniVoice}
+      OMNIVOICE_SAMPLE_RATE: ${OMNIVOICE_SAMPLE_RATE:-24000}
+      # Set OMNIVOICE_MOCK=1 in the env-file to run without a GPU (returns silence).
+      OMNIVOICE_MOCK: ${OMNIVOICE_MOCK:-}
+    volumes:
+      - hfcache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8002/health').status==200 else 1)"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [reelo]
+
+  # ---- Cloudflare Tunnel (token-managed; no host ports opened) -------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - web
+      - reelo-ui
+    networks: [reelo]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  hfcache:
+
+networks:
+  reelo:
+    driver: bridge

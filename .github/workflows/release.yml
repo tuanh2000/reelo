@@ -1,0 +1,147 @@
+# =============================================================================
+# Reelo release pipeline.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#     -> build job (hosted): build + push reelo-backend and reelo-ui to GHCR,
+#        tagged with the git tag AND `latest`.
+#     -> deploy job (self-hosted, home server): pull those images, run the prod
+#        stack at that tag, apply DB migrations.
+#
+# OmniVoice is NOT built on hosted CI (huge CUDA+torch image). It is built on the
+# home GPU host only when it changes — see the build-omnivoice job (gated) and
+# DEPLOY.md.
+# =============================================================================
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/tuanh2000/reelo-backend
+  UI_IMAGE: ghcr.io/tuanh2000/reelo-ui
+  OMNIVOICE_IMAGE: ghcr.io/tuanh2000/reelo-omnivoice
+  # The UI bakes this into the client bundle at build time.
+  NEXT_PUBLIC_API_BASE: https://api.cognal.xyz
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Build + push backend and UI images on hosted runners.
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout (the pushed tag)
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push reelo-backend (context = repo root)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: reelo-backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.ref_name }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push reelo-ui (API base baked at build time)
+        uses: docker/build-push-action@v6
+        with:
+          context: reelo-ui
+          file: reelo-ui/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_BASE=${{ env.NEXT_PUBLIC_API_BASE }}
+          tags: |
+            ${{ env.UI_IMAGE }}:${{ github.ref_name }}
+            ${{ env.UI_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 2) (optional) Build the OmniVoice GPU image on the self-hosted runner.
+  #    Disabled by default — set repo variable BUILD_OMNIVOICE=true to enable.
+  #    The deploy job only needs this image to exist in GHCR at the same tag.
+  # ---------------------------------------------------------------------------
+  build-omnivoice:
+    runs-on: [self-hosted]
+    needs: build
+    if: vars.BUILD_OMNIVOICE == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout (the pushed tag)
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push reelo-omnivoice (GPU image)
+        run: |
+          docker build \
+            -f reelo-backend/services/omnivoice/Dockerfile \
+            -t "${OMNIVOICE_IMAGE}:${{ github.ref_name }}" \
+            -t "${OMNIVOICE_IMAGE}:latest" \
+            reelo-backend/services/omnivoice
+          docker push "${OMNIVOICE_IMAGE}:${{ github.ref_name }}"
+          docker push "${OMNIVOICE_IMAGE}:latest"
+
+  # ---------------------------------------------------------------------------
+  # 3) Deploy on the home server (self-hosted runner). Pulls images at the tag,
+  #    brings the stack up, runs migrations. Idempotent — safe to re-run.
+  # ---------------------------------------------------------------------------
+  deploy:
+    runs-on: [self-hosted]
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_TAG: ${{ github.ref_name }}
+      # The real prod env-file lives ONLY on the server (never in the repo).
+      ENV_FILE: /opt/reelo/.env
+      COMPOSE: docker compose -f docker-compose.prod.yml --env-file /opt/reelo/.env
+    steps:
+      - name: Checkout (the pushed tag — for the compose file)
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull application images at this tag
+        run: $COMPOSE pull web worker reelo-ui
+
+      - name: Start / update the stack
+        run: $COMPOSE up -d --remove-orphans
+
+      - name: Apply database migrations
+        run: $COMPOSE run --rm web alembic upgrade head
+
+      - name: Show service status
+        run: $COMPOSE ps

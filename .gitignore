@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Prod env TEMPLATE only (no real secrets). The real prod env lives at
+# /opt/reelo/.env on the server, NOT in git. (No inline comments on the line
+# below — git treats them as part of the pattern.)
+!.env.prod.example
 **/cookie.json
 **/cookie.txt
 **/*.pem
