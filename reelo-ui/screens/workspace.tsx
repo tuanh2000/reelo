@@ -255,6 +255,7 @@ function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => 
             <span style={{ fontWeight: 700, fontSize: 14 }}>{job.name}</span>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: st.c, display: "inline-flex", alignItems: "center", gap: 5 }}>
               <Icon name={st.ic} size={14} className={job.state === "running" ? "spin" : ""} /> {st.t}
+              {job.state === "running" && <span style={{ opacity: 0.85 }}>· {job.progress}%</span>}
             </span>
           </div>
           <Progress value={job.progress} height={6} tone={isError ? "#dc2626" : job.state === "done" ? "#16a34a" : "var(--brand)"} />

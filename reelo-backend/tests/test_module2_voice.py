@@ -161,3 +161,85 @@ async def test_synth_voice_empty_script_raises(tmp_path, monkeypatch):
     ctx = CallContext(user_id="u", keys=KeyStore(Cipher(b"k" * 32)), usage=UsageLogger())
     with pytest.raises(ValueError):
         await voice.synth_voice(_series(), lo, ctx, registry=_FakeRegistry(client))
+
+
+# --------------------------------------------------------------------------- #
+# word-limit chunking (OmniVoice 200-word cap)                                #
+# --------------------------------------------------------------------------- #
+def test_resolve_word_limit_reads_config_and_none():
+    class _C(AIClient):
+        capabilities = {Task.GENERATE_VOICE}
+
+    omni = _C(ServiceConfig("omni", {"tasks": {"generate-voice": {"word_limit": 200, "char_limit": 6000}}}))
+    assert voice.resolve_word_limit(omni) == 200
+    edge = _C(ServiceConfig("edge", {"tasks": {"generate-voice": {"char_limit": 8000}}}))
+    assert voice.resolve_word_limit(edge) is None  # absent → None (use char_limit)
+
+
+def test_split_by_word_limit_packs_small_sections():
+    s1 = " ".join(["w"] * 120)
+    s2 = " ".join(["x"] * 60)  # 120 + 60 = 180 ≤ 200 → one chunk
+    chunks = voice.split_by_word_limit([s1, s2], limit=200)
+    assert len(chunks) == 1
+    assert voice.count_words(chunks[0]) == 180
+
+
+def test_split_by_word_limit_splits_oversize_section_by_sentence():
+    # 6 sentences × 50 words = 300 words in ONE section; limit 100 → must be split.
+    sent = " ".join(["w"] * 49) + " w."  # 50 tokens, ends a sentence
+    big = " ".join([sent] * 6)
+    chunks = voice.split_by_word_limit([big], limit=100)
+    assert len(chunks) > 1  # the oversize section was broken up (not one chunk)
+    assert all(voice.count_words(c) <= 100 for c in chunks)  # every chunk under cap
+
+
+# --------------------------------------------------------------------------- #
+# chunk-level resume: a cached chunk is reused (not re-synthesized)           #
+# --------------------------------------------------------------------------- #
+async def test_synth_voice_reuses_cached_chunk(tmp_path, monkeypatch):
+    lo = layout_for(tmp_path)
+    lo.voice_dir.mkdir(parents=True)
+    # 3 sections @100 chars, char_limit 150 → 3 chunks (each its own).
+    lo.script_md.write_text("\n\n===\n\n".join(["a" * 100, "b" * 100, "c" * 100]))
+    client = _FakeVoiceClient(
+        ServiceConfig("fake", {"tasks": {"generate-voice": {"char_limit": 150}}})
+    )
+
+    async def fake_concat(parts, out_path, **kw):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"joined")
+        return Path(out_path)
+
+    async def fake_probe(path, **kw):
+        return 30.0
+
+    monkeypatch.setattr(voice.ffmpeg, "concat_audio", fake_concat)
+    monkeypatch.setattr(voice.ffmpeg, "probe_duration", fake_probe)
+
+    done_idx: list[int] = []
+    progress: list[float] = []
+
+    async def on_reuse(i, text, part):
+        if i == 1:  # pretend chunk 1 is cached → fetch it into the work folder
+            Path(part).parent.mkdir(parents=True, exist_ok=True)
+            Path(part).write_bytes(b"cached")
+            return True
+        return False
+
+    async def on_done(i, text, part):
+        done_idx.append(i)
+
+    async def on_prog(f):
+        progress.append(f)
+
+    ctx = CallContext(user_id="u", keys=KeyStore(Cipher(b"k" * 32)), usage=UsageLogger())
+    outcome = await voice.synth_voice(
+        _series(), lo, ctx, registry=_FakeRegistry(client),
+        on_chunk_reuse=on_reuse, on_chunk_done=on_done, on_progress=on_prog,
+    )
+
+    # Chunk 1 reused → NOT synthesized; only chunks 2 & 3 hit the TTS client.
+    assert len(client.calls) == 2
+    assert done_idx == [2, 3]  # persisted only the freshly-synthesized chunks
+    assert len(outcome.parts) == 3  # all 3 parts present (1 cached + 2 fresh) for concat
+    assert progress == sorted(progress) and progress[-1] == 1.0  # bar advances → 100%

@@ -109,6 +109,7 @@ async def _record_manifest_entry(
     *,
     image: tuple[int, str] | None = None,
     voice_hash: str | None = None,
+    voice_chunk: tuple[int, str] | None = None,
 ) -> None:
     """Merge one asset's content hash into ``episode.paths[asset_manifest]`` + commit.
 
@@ -117,6 +118,10 @@ async def _record_manifest_entry(
     them instead of re-spending image/voice credit (resume, A). Serialized by
     ``lock`` because the parallel image tasks read-modify-write the same JSONB blob
     (a shallow ``set_paths`` merge would otherwise drop concurrent sibling entries).
+
+    ``voice_chunk = (index, hash)`` records ONE voice chunk under
+    ``asset_manifest["voice_chunks"]`` so a voiceover interrupted mid-way reuses the
+    chunks that finished and only re-synthesizes the rest.
     """
     async with lock:
         async with session_scope() as session:
@@ -130,6 +135,10 @@ async def _record_manifest_entry(
                 man["images"] = images
             if voice_hash is not None:
                 man["voice"] = voice_hash
+            if voice_chunk is not None:
+                vchunks = dict(man.get("voice_chunks") or {})
+                vchunks[str(voice_chunk[0])] = voice_chunk[1]
+                man["voice_chunks"] = vchunks
             await repo.set_paths(
                 user_id, episode_id, {resume_mod.MANIFEST_KEY: man}, merge=True
             )
@@ -458,16 +467,56 @@ async def run_voice(
                 return voice.VoiceOutcome(
                     voice_mp3=lo.voice_mp3, duration_s=duration, parts=[], total_chars=0
                 )
+    # Per-chunk resume + incremental persist (so a voiceover interrupted mid-way
+    # reuses the chunks that finished). Hooks are no-ops without episode/lock (tests
+    # / direct calls). Progress advances the Voiceover bar per chunk (10→90).
+    prev_chunks = (prev_manifest or {}).get("voice_chunks") or {}
+
+    async def _reuse_chunk(index: int, chunk_text: str, part) -> bool:
+        if episode_id is None:
+            return False
+        want = resume_mod.voice_chunk_hash(series, chunk_text)
+        return await resume_mod.reuse_voice_chunk(
+            user_id, episode_id, index, part, want_hash=want, prev_chunks=prev_chunks
+        )
+
+    async def _chunk_done(index: int, chunk_text: str, part) -> None:
+        if episode_id is None or persist_lock is None:
+            return
+        try:
+            await _upload_asset(user_id, episode_id, lo, part)
+            await _record_manifest_entry(
+                user_id, episode_id, persist_lock,
+                voice_chunk=(index, resume_mod.voice_chunk_hash(series, chunk_text)),
+            )
+        except Exception as exc:  # noqa: BLE001 — persist is best-effort
+            log.warning("incremental voice-chunk persist failed for %d: %s", index, exc)
+
+    _vpct = [jobmod.PROGRESS_START]
+
+    async def _voice_progress(frac: float) -> None:
+        span = jobmod.PROGRESS_RUNNING_CAP - jobmod.PROGRESS_START
+        pct = jobmod.PROGRESS_START + int(max(0.0, min(frac, 1.0)) * span)
+        if pct > _vpct[0]:
+            _vpct[0] = pct
+            await update_job(user_id, voice_job_id, progress=pct)
+
     try:
-        outcome = await voice.synth_voice(series, lo, ctx, registry=registry)
+        outcome = await voice.synth_voice(
+            series, lo, ctx, registry=registry,
+            on_chunk_reuse=_reuse_chunk,
+            on_chunk_done=_chunk_done,
+            on_progress=_voice_progress,
+        )
     except Exception as exc:  # noqa: BLE001
         await update_job(
             user_id, voice_job_id, state="error",
             progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
         )
         raise
-    # Incremental persist (resume, A): make the fresh voiceover durable + record its
-    # hash now, so an interrupt mid-run doesn't force a re-synthesis next run.
+    # Incremental persist (resume, A): make the concatenated voiceover durable +
+    # record its whole-file hash, so a fully-completed voice is reused wholesale
+    # next run (skips the chunk loop entirely).
     if ep is not None and episode_id is not None and persist_lock is not None:
         try:
             await _upload_asset(user_id, episode_id, lo, lo.voice_mp3)

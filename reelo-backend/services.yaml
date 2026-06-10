@@ -177,6 +177,11 @@ services:
         # sample + transcript come from the series voice_sample at produce time.
         mode: clone
         char_limit: 6000
+        # Runs on a LOCAL GPU and is failure-prone on long inputs, so cap each TTS
+        # call to 200 words (word_limit wins over char_limit). Smaller chunks =
+        # far more reliable synthesis, and with chunk-level resume a failed chunk
+        # only re-does that chunk, not the whole voiceover.
+        word_limit: 200
     pricing:
       # Reelo-hosted GPU; per-1k-chars placeholder a deployment SHOULD set to its
       # real amortized GPU cost. Verify against your host's $/GPU-hour.

@@ -283,7 +283,7 @@ async def test_runner_blocks_render_on_image_failure(tmp_path, monkeypatch):
 
     # voice client writes a small file; ffmpeg not needed because render is faked,
     # but synth_voice still concats + probes -> fake those too.
-    async def fake_synth(series_, lo, ctx, *, registry):
+    async def fake_synth(series_, lo, ctx, *, registry, **kw):
         lo.voice_mp3.parent.mkdir(parents=True, exist_ok=True)
         lo.voice_mp3.write_bytes(b"x")
         from module2.voice import VoiceOutcome

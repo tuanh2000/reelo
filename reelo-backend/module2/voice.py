@@ -17,6 +17,8 @@ not read them); the voice client also strips them defensively.
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +102,83 @@ def resolve_char_limit(client: AIClient) -> int:
         return DEFAULT_CHAR_LIMIT
 
 
+def resolve_word_limit(client: AIClient) -> int | None:
+    """Read a voice client's ``word_limit`` (e.g. OmniVoice), or ``None`` if unset.
+
+    A word limit takes precedence over ``char_limit`` and produces much smaller
+    chunks. OmniVoice runs on a local GPU and is failure-prone on long inputs, so
+    capping each TTS call to a few-hundred words makes synthesis far more reliable
+    (and, with chunk-level resume, a failed chunk only re-does that chunk).
+    """
+    block = client.config.tasks.get(Task.GENERATE_VOICE.value, {}) or {}
+    raw = block.get("word_limit")
+    try:
+        val = int(raw) if raw else 0
+    except (TypeError, ValueError):
+        return None
+    return val if val > 0 else None
+
+
+def count_words(text: str) -> int:
+    """Whitespace-delimited token count (a good proxy for Vietnamese + English)."""
+    return len(text.split())
+
+
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split text into sentences on ``. ! ? …`` boundaries (keeps the punctuation)."""
+    return [s for s in (p.strip() for p in _SENTENCE_BOUNDARY.split(text)) if s]
+
+
+def split_by_word_limit(sections: list[str], limit: int) -> list[str]:
+    """Greedily pack ``sections`` into chunks each ≤ ``limit`` WORDS.
+
+    Unlike :func:`split_by_char_limit`, a section longer than ``limit`` IS broken
+    up — by sentence — so no chunk blows past the word cap (important for a fragile
+    local model). A single sentence longer than ``limit`` is still kept whole (never
+    split mid-sentence). Pieces are joined with blank lines for prosody.
+    """
+    if limit <= 0:
+        return split_by_char_limit(sections, DEFAULT_CHAR_LIMIT)
+    # 1. Break oversized sections into ≤ limit-word pieces (by sentence).
+    pieces: list[str] = []
+    for sec in (s.strip() for s in sections):
+        if not sec:
+            continue
+        if count_words(sec) <= limit:
+            pieces.append(sec)
+            continue
+        buf: list[str] = []
+        buf_w = 0
+        for sent in split_sentences(sec):
+            w = count_words(sent)
+            if buf and buf_w + w > limit:
+                pieces.append(" ".join(buf))
+                buf, buf_w = [sent], w
+            else:
+                buf.append(sent)
+                buf_w += w
+        if buf:
+            pieces.append(" ".join(buf))
+    # 2. Greedily pack consecutive pieces into chunks ≤ limit words.
+    chunks: list[str] = []
+    buf2: list[str] = []
+    buf2_w = 0
+    for p in pieces:
+        w = count_words(p)
+        if buf2 and buf2_w + w > limit:
+            chunks.append("\n\n".join(buf2))
+            buf2, buf2_w = [p], w
+        else:
+            buf2.append(p)
+            buf2_w += w
+    if buf2:
+        chunks.append("\n\n".join(buf2))
+    return chunks
+
+
 @dataclass
 class VoiceOutcome:
     """Result of a voice run: final mp3, its duration, and the part files."""
@@ -141,8 +220,23 @@ async def synth_voice(
     ctx: CallContext,
     *,
     registry: ServiceRegistry | None = None,
+    on_chunk_reuse: Callable[[int, str, Path], Awaitable[bool]] | None = None,
+    on_chunk_done: Callable[[int, str, Path], Awaitable[None]] | None = None,
+    on_progress: Callable[[float], Awaitable[None]] | None = None,
 ) -> VoiceOutcome:
     """Synthesize narration → ``voice/voice.mp3`` (chunk + concat) and probe duration.
+
+    Chunking: a provider ``word_limit`` (OmniVoice) wins over ``char_limit`` and
+    yields small, reliable chunks; otherwise sections are packed by ``char_limit``.
+
+    Resume hooks (optional — injected by the runner so this stays DB/storage-free):
+
+    - ``on_chunk_reuse(index, chunk_text, part)`` → ``True`` if the chunk's cached
+      mp3 was fetched into ``part`` (skip the TTS call); ``False`` to synthesize.
+    - ``on_chunk_done(index, chunk_text, part)`` → persist a freshly-synthesized
+      chunk (upload + record its hash) so a later run can reuse it.
+    - ``on_progress(fraction)`` → 0.0–1.0 after each chunk, so the worker can
+      advance the Voiceover job's progress bar per chunk.
 
     Args:
         series: provides ``voice`` (provider/voice_id/settings) + ``language``.
@@ -163,8 +257,11 @@ async def synth_voice(
     if not sections:
         raise ValueError("script.md has no narration sections")
 
-    limit = resolve_char_limit(client)
-    chunks = split_by_char_limit(sections, limit)
+    word_limit = resolve_word_limit(client)
+    if word_limit:
+        chunks = split_by_word_limit(sections, word_limit)
+    else:
+        chunks = split_by_char_limit(sections, resolve_char_limit(client))
 
     # Carry language so keyless edge-tts can resolve its default voice.
     settings = dict(series.voice.settings or {})
@@ -175,24 +272,35 @@ async def synth_voice(
     # (edge/eleven) leave these None and behave exactly as before.
     clone = await _prepare_clone(series, lo) if _is_clone(series) else None
 
+    # Count the concat as one extra progress unit so the bar lands near (not at)
+    # 1.0 just before the join.
+    units = len(chunks) + 1
     parts: list[Path] = []
     total_chars = 0
     for i, text in enumerate(chunks, start=1):
         part = lo.voice_dir / f"voice_part_{i:02d}.mp3"
-        req = VoiceRequest(voice_id=series.voice.voice_id, text=text, settings=settings)
-        if clone is not None:
-            req.ref_audio = clone["ref_audio"]
-            req.ref_text = clone["ref_text"]
-            req.language = clone["language"]
-        await client.generate_voice(req, out_path=part, ctx=ctx)
+        # Resume: reuse this chunk's cached mp3 (unchanged + in storage) — no TTS.
+        reused = False
+        if on_chunk_reuse is not None:
+            reused = await on_chunk_reuse(i, text, part)
+        if not reused:
+            req = VoiceRequest(voice_id=series.voice.voice_id, text=text, settings=settings)
+            if clone is not None:
+                req.ref_audio = clone["ref_audio"]
+                req.ref_text = clone["ref_text"]
+                req.language = clone["language"]
+            await client.generate_voice(req, out_path=part, ctx=ctx)
+            total_chars += len(text)
+            if on_chunk_done is not None:
+                await on_chunk_done(i, text, part)
         parts.append(part)
-        total_chars += len(text)
+        if on_progress is not None:
+            await on_progress(min(i / units, 1.0))
 
-    if len(parts) == 1:
-        # Single chunk: copy/rename to voice.mp3 (still re-encode for uniformity).
-        await ffmpeg.concat_audio(parts, lo.voice_mp3)
-    else:
-        await ffmpeg.concat_audio(parts, lo.voice_mp3)
+    # Concatenate the per-chunk parts (re-encode) → voice.mp3 (uniform, clean joins).
+    await ffmpeg.concat_audio(parts, lo.voice_mp3)
+    if on_progress is not None:
+        await on_progress(1.0)
 
     duration = await ffmpeg.probe_duration(lo.voice_mp3)
     log.info(
@@ -214,7 +322,11 @@ __all__ = [
     "DEFAULT_CHAR_LIMIT",
     "read_sections",
     "split_by_char_limit",
+    "split_by_word_limit",
     "resolve_char_limit",
+    "resolve_word_limit",
+    "count_words",
+    "split_sentences",
     "VoiceOutcome",
     "synth_voice",
 ]

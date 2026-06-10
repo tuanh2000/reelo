@@ -116,6 +116,25 @@ def voice_hash(series: SeriesSpec, ep: EpisodeSpec) -> str:
     )
 
 
+def voice_chunk_hash(series: SeriesSpec, chunk_text: str) -> str:
+    """Content hash for ONE voice chunk — voice config + this chunk's exact text.
+
+    Lets the runner reuse an already-synthesized chunk part (``voice_part_NN.mp3``)
+    when a re-run produces the identical chunk (same script + provider + voice).
+    """
+    voice = series.voice
+    sample_key = voice.voice_sample.audio_key if voice.voice_sample is not None else ""
+    return _sha(
+        "voice-chunk",
+        voice.provider,
+        voice.voice_id,
+        voice.mode,
+        sample_key or "",
+        series.language,
+        chunk_text,
+    )
+
+
 def thumbnail_hash(series: SeriesSpec, ep: EpisodeSpec) -> str:
     """Content hash for the thumbnail set — title + style inputs."""
     style = series.image_style
@@ -226,6 +245,28 @@ async def reuse_voice(
     return await _try_fetch(user_id, episode_id, "voice/voice.mp3", lo.voice_mp3)
 
 
+async def reuse_voice_chunk(
+    user_id: str,
+    episode_id: str,
+    index: int,
+    part_dest: Path,
+    *,
+    want_hash: str,
+    prev_chunks: dict,
+) -> bool:
+    """Reuse a cached ``voice/voice_part_NN.mp3`` when present + unchanged. True on hit.
+
+    Compares the chunk's wanted hash to the previous run's per-chunk hash
+    (``prev_chunks``); only on a match do we fetch the cached part into
+    ``part_dest`` — so a voice run interrupted after some chunks finished re-does
+    only the chunks that never completed.
+    """
+    if (prev_chunks or {}).get(str(index)) != want_hash:
+        return False
+    rel = f"voice/{Path(part_dest).name}"
+    return await _try_fetch(user_id, episode_id, rel, Path(part_dest))
+
+
 async def reuse_thumbnails(
     user_id: str, episode_id: str, lo: ProjectLayout, *, want_hash: str, prev: dict
 ) -> bool:
@@ -269,11 +310,13 @@ __all__ = [
     "read_kie_tasks",
     "image_hash",
     "voice_hash",
+    "voice_chunk_hash",
     "thumbnail_hash",
     "read_manifest",
     "build_manifest",
     "reuse_segment_image",
     "reuse_voice",
+    "reuse_voice_chunk",
     "reuse_thumbnails",
     "reuse_final",
     "reuse_srt",

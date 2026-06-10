@@ -322,7 +322,8 @@ def _patch_runner(monkeypatch, jobs_store, ep_row, storage, series, ep):
     monkeypatch.setattr(runner.renderer, "render_episode", fake_render)
 
     # synth_voice writes the file + reports duration (no real ffmpeg concat/probe).
-    async def fake_synth(series_, lo, ctx, *, registry):
+    # Accept the chunk-resume / progress hooks run_voice now passes (ignored here).
+    async def fake_synth(series_, lo, ctx, *, registry, **kw):
         lo.voice_mp3.parent.mkdir(parents=True, exist_ok=True)
         lo.voice_mp3.write_bytes(b"MP3")
         from module2.voice import VoiceOutcome
