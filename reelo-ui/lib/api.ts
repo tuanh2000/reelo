@@ -237,14 +237,21 @@ export interface EpisodeAssets {
   srtUrl: string | null;
   thumbnails: string[];
 }
+/** Lazy script-gen progress surfaced on GET /episodes/{id} (workspace polls it). */
+export type ScriptStatus = "running" | "done" | "error";
 export interface EpisodeDetail {
   seriesId: string;
   episode: EpisodeSpec;
   assets: EpisodeAssets;
+  // "running" | "done" | "error" | null (never generated). When "error",
+  // `scriptError` carries a short, copyable message (provider + cause).
+  scriptStatus: ScriptStatus | null;
+  scriptError: string | null;
 }
 /**
  * Fetch a single episode's live spec (status/segments/youtube) + signed asset
- * URLs. Used to (a) poll until lazy script gen flips status to `scripted`, and
+ * URLs + lazy script-gen status. Used to (a) poll until lazy script gen flips to
+ * `done`/`error` (so the workspace shows state, not an endless spinner), and
  * (b) source the rendered video + thumbnails for the review screen without first
  * POSTing to /publish/export.
  */
@@ -253,6 +260,8 @@ export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
     series_id: string;
     episode: EpisodeSpec;
     assets: { videoUrl: string | null; srtUrl: string | null; thumbnails: string[] };
+    script_status?: ScriptStatus | null;
+    script_error?: string | null;
   }>(`/episodes/${episodeId}`);
   return {
     seriesId: data.series_id,
@@ -262,6 +271,8 @@ export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
       srtUrl: data.assets?.srtUrl ?? null,
       thumbnails: data.assets?.thumbnails ?? [],
     },
+    scriptStatus: data.script_status ?? null,
+    scriptError: data.script_error ?? null,
   };
 }
 

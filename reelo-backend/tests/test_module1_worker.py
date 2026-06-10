@@ -26,6 +26,19 @@ def _spec() -> SeriesSpec:
     )
 
 
+class _FakeEpisodeRepo:
+    """Captures set_script_state calls so tests can assert the running→done flow."""
+
+    calls: list[tuple] = []
+
+    def __init__(self, session):
+        pass
+
+    async def set_script_state(self, user_id, episode_id, status, error=None):
+        type(self).calls.append((status, error))
+        return object()
+
+
 async def test_generate_script_task_persists_scripted(monkeypatch):
     spec = _spec()
     saved: dict = {}
@@ -49,10 +62,12 @@ async def test_generate_script_task_persists_scripted(monkeypatch):
         saved["episode"] = updated
         return spec
 
+    _FakeEpisodeRepo.calls = []
     # Patch the registry the episode_script module resolves through.
     monkeypatch.setattr(tasks, "build_call_context", fake_build_ctx)
     monkeypatch.setattr(tasks, "flush_call_context_usage", fake_flush)
     monkeypatch.setattr(tasks, "session_scope", fake_scope)
+    monkeypatch.setattr(tasks, "EpisodeRepo", _FakeEpisodeRepo)
 
     import module1.persistence as persistence
 
@@ -70,6 +85,8 @@ async def test_generate_script_task_persists_scripted(monkeypatch):
     assert saved["episode"].status == "scripted"
     assert len(saved["episode"].segments) == 9
     assert flushed == [True]
+    # running on entry, done on success (no error recorded)
+    assert _FakeEpisodeRepo.calls == [("running", None), ("done", None)]
 
 
 async def test_generate_script_task_missing_episode_flushes_and_raises(monkeypatch):
@@ -89,9 +106,11 @@ async def test_generate_script_task_missing_episode_flushes_and_raises(monkeypat
     async def fake_find(session, user_id, episode_id):
         return None
 
+    _FakeEpisodeRepo.calls = []
     monkeypatch.setattr(tasks, "build_call_context", fake_build_ctx)
     monkeypatch.setattr(tasks, "flush_call_context_usage", fake_flush)
     monkeypatch.setattr(tasks, "session_scope", fake_scope)
+    monkeypatch.setattr(tasks, "EpisodeRepo", _FakeEpisodeRepo)
 
     import module1.persistence as persistence
 
@@ -102,3 +121,6 @@ async def test_generate_script_task_missing_episode_flushes_and_raises(monkeypat
     with pytest.raises(ValueError):
         await tasks.generate_script({}, "u1", "missing")
     assert flushed == [True]  # flush still runs in finally
+    # The failure is recorded as an error state (not silently swallowed).
+    assert _FakeEpisodeRepo.calls and _FakeEpisodeRepo.calls[-1][0] == "error"
+    assert "not found" in _FakeEpisodeRepo.calls[-1][1]

@@ -25,6 +25,9 @@ class GenJob(BaseModel):
     icon: str  # lucide icon id, e.g. "mic" | "image" | "film"
     state: JobState = "queued"
     progress: int = Field(default=0, ge=0, le=100)
+    # Captured failure detail (truncated) — only set when ``state == "error"`` so
+    # the UI can show a copyable per-job error block. None otherwise.
+    stderr: str | None = None
 
 
 # Canonical child-job kinds the produce pipeline seeds (Module 2 §8). The

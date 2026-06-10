@@ -122,6 +122,12 @@ class EpisodeDetailResponse(BaseModel):
     series_id: str
     episode: EpisodeSpec
     assets: EpisodeAssets = Field(default_factory=EpisodeAssets)
+    # Lazy script-gen progress so the UI never spins forever (surfaced from the
+    # episode's ``paths`` JSONB, written by ``worker.tasks.generate_script``).
+    # ``script_status`` is "running" | "done" | "error" | None (never generated);
+    # ``script_error`` carries a short, copyable message only when status="error".
+    script_status: Literal["running", "done", "error"] | None = None
+    script_error: str | None = None
 
 
 # --------------------------------------------------------------------------- #

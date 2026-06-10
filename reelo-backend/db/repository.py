@@ -202,6 +202,41 @@ class EpisodeRepo:
             ep.status = status
             await self.s.flush()
 
+    async def set_script_state(
+        self,
+        user_id: str,
+        episode_id: str,
+        script_status: str,
+        error: str | None = None,
+    ) -> Episode | None:
+        """Record lazy-script-gen progress so the UI can surface it (status + error).
+
+        ``script_status`` is ``"running" | "done" | "error"``. ``error`` is a short
+        human-readable message (provider + cause), set only when status is
+        ``"error"`` and cleared on every ``running``/``done`` transition. Kept in
+        the existing ``paths`` JSONB (no migration) under the ``script_status`` /
+        ``script_error`` keys, merged so asset keys are not clobbered.
+        """
+        ep = await self.get(user_id, episode_id)
+        if ep is None:
+            return None
+        paths = {**(ep.paths or {})}
+        paths["script_status"] = script_status
+        if script_status == "error":
+            paths["script_error"] = error or "unknown error"
+        else:
+            paths.pop("script_error", None)
+        ep.paths = paths
+        await self.s.flush()
+        return ep
+
+    @staticmethod
+    def script_state(paths: dict[str, Any] | None) -> tuple[str | None, str | None]:
+        """Project ``(script_status, script_error)`` out of an episode's ``paths``."""
+        p = paths or {}
+        status = p.get("script_status")
+        return (status if isinstance(status, str) else None), p.get("script_error")
+
     async def get_curation(self, user_id: str, episode_id: str) -> dict[str, Any] | None:
         """Return the episode's ``image_curation`` blob (M2-12), or None."""
         ep = await self.get(user_id, episode_id)

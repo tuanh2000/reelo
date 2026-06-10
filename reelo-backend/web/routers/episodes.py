@@ -82,7 +82,20 @@ async def get_episode(
     thumb_keys = [t for t in (paths.get("thumbnails") or "").split(",") if t]
     assets.thumbnails = [await storage.signed_url(t) for t in thumb_keys]
 
-    return EpisodeDetailResponse(series_id=series_row.id, episode=ep, assets=assets)
+    # Surface lazy script-gen progress (running/done/error + copyable message) so
+    # the workspace can show state instead of an infinite spinner. If segments
+    # already exist, the script is effectively done regardless of any stale flag.
+    script_status, script_error = EpisodeRepo.script_state(paths)
+    if ep.segments:
+        script_status, script_error = "done", None
+
+    return EpisodeDetailResponse(
+        series_id=series_row.id,
+        episode=ep,
+        assets=assets,
+        script_status=script_status,  # type: ignore[arg-type]
+        script_error=script_error,
+    )
 
 
 @router.post("/{episode_id}/script", response_model=EpisodeScriptResponse)
@@ -102,6 +115,10 @@ async def generate_episode_script(
         )
     _, _, ep = found
     if not ep.segments:
+        # Mark running + clear any prior error *before* enqueueing so a re-fetch
+        # (or a "Thử lại" after a failure) immediately reflects the new attempt,
+        # not the stale error — even before the worker picks the job up.
+        await EpisodeRepo(db).set_script_state(user_id, episode_id, "running")
         await enqueue_job("generate_script", user_id, episode_id)
     return EpisodeScriptResponse(episode=ep)
 

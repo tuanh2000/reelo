@@ -262,6 +262,102 @@ export function ChatBubble({ role, children }: { role: "ai" | "user"; children: 
   );
 }
 
+// ---- Copyable error box (script-gen + produce failures) ----
+// A red-toned block with a title, an optional hint, the full error in a
+// scrollable <pre> the user can read in full, and a "Sao chép" button so they
+// can paste the message back to us. `actions` renders extra buttons (e.g. retry).
+export function ErrorBox({
+  title,
+  detail,
+  hint,
+  actions,
+  style,
+}: {
+  title: string;
+  detail: string;
+  hint?: React.ReactNode;
+  actions?: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(detail);
+      } else {
+        // Fallback for non-secure contexts / older browsers.
+        const ta = document.createElement("textarea");
+        ta.value = detail;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* clipboard blocked — the <pre> is still selectable manually */
+    }
+  };
+  return (
+    <div
+      className="card"
+      style={{
+        padding: 16,
+        boxShadow: "none",
+        border: "1.5px solid color-mix(in oklab,#dc2626 35%,var(--border))",
+        background: "color-mix(in oklab,#dc2626 5%,var(--surface))",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        ...style,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        <Icon name="alert-triangle" size={18} style={{ color: "#dc2626", flex: "none" }} />
+        <span style={{ fontWeight: 800, fontSize: 14.5, color: "#dc2626" }}>{title}</span>
+        <button
+          className="btn btn-soft btn-sm"
+          style={{ marginLeft: "auto" }}
+          onClick={copy}
+          title="Sao chép nội dung lỗi"
+        >
+          <Icon name={copied ? "check" : "copy"} size={15} />
+          <span className="btn-label">{copied ? "Đã chép" : "Sao chép lỗi"}</span>
+        </button>
+      </div>
+      {hint && (
+        <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+          {hint}
+        </div>
+      )}
+      <pre
+        className="mono"
+        style={{
+          margin: 0,
+          padding: "10px 12px",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          fontSize: 12.5,
+          lineHeight: 1.5,
+          color: "var(--text)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          maxHeight: 220,
+          overflow: "auto",
+          userSelect: "text",
+        }}
+      >
+        {detail}
+      </pre>
+      {actions && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{actions}</div>}
+    </div>
+  );
+}
+
 // ---- Centered empty state (e.g. a screen reached with no active series) ----
 export function EmptyState({
   icon = "folder-open",

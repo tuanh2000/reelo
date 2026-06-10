@@ -74,6 +74,16 @@ def m1_client(store, monkeypatch):
         async def get(self, user_id, episode_id):
             return store.episodes.get(episode_id)
 
+        async def set_script_state(self, user_id, episode_id, status, error=None):
+            store.script_state = (status, error)
+            return store.episodes.get(episode_id)
+
+        @staticmethod
+        def script_state(paths):
+            p = paths or {}
+            st = p.get("script_status")
+            return (st if isinstance(st, str) else None), p.get("script_error")
+
     class FakeStorage:
         async def signed_url(self, key, **kw):
             return f"https://signed/{key}"

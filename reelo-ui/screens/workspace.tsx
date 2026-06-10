@@ -3,7 +3,7 @@
 // ===== Screen 5: Script Workspace — pipeline + editor + chat (ported from screen-workspace.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble, EmptyState } from "@/components/ui";
+import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble, EmptyState, ErrorBox } from "@/components/ui";
 import { PIPELINE, type Nav, type Route, type Series, type Episode, type GenJob, type ScriptSegment } from "@/lib/data";
 import {
   generateEpisodeScript,
@@ -14,6 +14,11 @@ import {
   type CostEstimate,
   type SegmentSpec,
 } from "@/lib/api";
+
+// After this long with no segments and no error, warn that the worker may be
+// down/busy (we keep polling regardless). ~90s per the spec.
+const SCRIPT_STALL_MS = 90_000;
+const SCRIPT_POLL_MS = 2000;
 
 // Web media providers offer a human curation step before produce: the aggregate
 // `web` plus the `web-*` family (web-commons photos / web-pexels clips). AI
@@ -145,36 +150,46 @@ function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => 
     error: { c: "#dc2626", t: "Lỗi", ic: "alert-triangle" },
   } as const;
   const st = stateMap[job.state];
+  const isError = job.state === "error";
   return (
-    <div className="card" style={{ padding: 14, boxShadow: "none", display: "flex", alignItems: "center", gap: 13 }}>
-      <span
-        style={{
-          width: 38,
-          height: 38,
-          borderRadius: 11,
-          background: "var(--surface-2)",
-          color: st.c,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flex: "none",
-        }}
-      >
-        <Icon name={job.icon} size={18} />
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
-          <span style={{ fontWeight: 700, fontSize: 14 }}>{job.name}</span>
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: st.c, display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <Icon name={st.ic} size={14} className={job.state === "running" ? "spin" : ""} /> {st.t}
-          </span>
+    <div className="card" style={{ padding: 14, boxShadow: "none", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
+        <span
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 11,
+            background: "var(--surface-2)",
+            color: st.c,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flex: "none",
+          }}
+        >
+          <Icon name={job.icon} size={18} />
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{job.name}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: st.c, display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <Icon name={st.ic} size={14} className={job.state === "running" ? "spin" : ""} /> {st.t}
+            </span>
+          </div>
+          <Progress value={job.progress} height={6} tone={isError ? "#dc2626" : job.state === "done" ? "#16a34a" : "var(--brand)"} />
         </div>
-        <Progress value={job.progress} height={6} tone={job.state === "error" ? "#dc2626" : job.state === "done" ? "#16a34a" : "var(--brand)"} />
+        {isError && (
+          <Button variant="soft" size="sm" icon="refresh-cw" onClick={() => onRetry && onRetry(job.id)}>
+            Thử lại
+          </Button>
+        )}
       </div>
-      {job.state === "error" && (
-        <Button variant="soft" size="sm" icon="refresh-cw" onClick={() => onRetry && onRetry(job.id)}>
-          Thử lại
-        </Button>
+      {isError && (
+        <ErrorBox
+          title={`Lỗi: ${job.name}`}
+          detail={job.stderr || "Không có chi tiết lỗi từ worker (job báo lỗi nhưng không kèm thông điệp)."}
+          hint="Sao chép nội dung dưới đây để gửi lại, hoặc nhấn “Thử lại” để chạy lại bước này."
+        />
       )}
     </div>
   );
@@ -190,7 +205,12 @@ function ProducingView({
   onRetry: (childId: string) => void;
 }) {
   const allDone = jobs.length > 0 && jobs.every((j) => j.state === "done");
-  const hasError = jobs.some((j) => j.state === "error");
+  const errorJobs = jobs.filter((j) => j.state === "error");
+  const hasError = errorJobs.length > 0;
+  // Combined, copyable summary of every failed job (for "gửi lại" in one paste).
+  const combinedError = errorJobs
+    .map((j) => `# ${j.name}\n${j.stderr || "(không có chi tiết lỗi)"}`)
+    .join("\n\n");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div
@@ -244,6 +264,14 @@ function ProducingView({
           </Button>
         )}
       </div>
+
+      {hasError && errorJobs.length > 1 && (
+        <ErrorBox
+          title={`Tổng hợp lỗi sản xuất (${errorJobs.length} bước)`}
+          detail={combinedError}
+          hint="Có nhiều bước gặp lỗi. Sao chép toàn bộ để gửi lại, hoặc thử lại từng bước bên dưới."
+        />
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {jobs.length === 0 ? (
@@ -395,32 +423,75 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
   const [jobId, setJobId] = React.useState<string | null>(route.jobId ?? null);
   const [jobs, setJobs] = React.useState<GenJob[]>([]);
 
-  // ---- Script segments (lazy gen) ----
+  // ---- Script segments (lazy gen) — explicit state machine over getEpisode ----
+  // phase: "loading"  = first fetch / kicking off lazy gen (brief)
+  //        "running"  = worker writing the script, no segments yet (show timer)
+  //        "done"     = segments present (show the editor)
+  //        "error"    = worker reported a failure (show copyable error + retry)
+  type ScriptPhase = "loading" | "running" | "done" | "error";
   const [segments, setSegments] = React.useState<ScriptSegment[] | null>(null);
-  const [scriptLoading, setScriptLoading] = React.useState(true);
+  const [scriptPhase, setScriptPhase] = React.useState<ScriptPhase>("loading");
   const [scriptError, setScriptError] = React.useState<string | null>(null);
+  // Elapsed seconds while running, + a stall flag once we pass SCRIPT_STALL_MS.
+  const [scriptElapsed, setScriptElapsed] = React.useState(0);
+  const [scriptStalled, setScriptStalled] = React.useState(false);
+  // Bump to force a fresh gen attempt (the "Thử lại" button).
+  const [scriptAttempt, setScriptAttempt] = React.useState(0);
 
   // Load (and if needed lazily generate) the episode script, then poll the
-  // episode until it is scripted. Demo/offline: a missing backend surfaces as an
-  // error banner but the screen stays usable.
+  // episode until it is `done` or `error`. The poll is fully cleaned up on
+  // unmount / done / error so it never leaks. Demo/offline: a missing backend
+  // surfaces as an error (copyable) but the screen stays usable.
   React.useEffect(() => {
     if (!route.episode) {
       // Series opened without a specific episode — nothing to fetch yet.
-      setScriptLoading(false);
+      setScriptPhase("done");
       return;
     }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    setScriptLoading(true);
+    let tick: ReturnType<typeof setInterval> | null = null;
+    const startedAt = Date.now();
+    setSegments(null);
+    setScriptPhase("loading");
     setScriptError(null);
+    setScriptElapsed(0);
+    setScriptStalled(false);
+
+    const stopTimers = () => {
+      if (timer) clearTimeout(timer);
+      if (tick) clearInterval(tick);
+      timer = null;
+      tick = null;
+    };
 
     const apply = (segs: SegmentSpec[]) => {
       if (!alive) return;
+      stopTimers();
       setSegments(segs.map(specToScript));
-      setScriptLoading(false);
+      setScriptPhase("done");
     };
 
-    const pollUntilScripted = async () => {
+    const fail = (msg: string) => {
+      if (!alive) return;
+      stopTimers();
+      setScriptError(msg);
+      setScriptPhase("error");
+    };
+
+    // Drive the elapsed-seconds counter + stall warning while we wait.
+    const startRunningClock = () => {
+      if (tick) return;
+      setScriptPhase("running");
+      tick = setInterval(() => {
+        if (!alive) return;
+        const secs = Math.floor((Date.now() - startedAt) / 1000);
+        setScriptElapsed(secs);
+        if (secs * 1000 >= SCRIPT_STALL_MS) setScriptStalled(true);
+      }, 1000);
+    };
+
+    const pollUntilSettled = async () => {
       try {
         const detail = await getEpisode(episode.id);
         if (!alive) return;
@@ -428,35 +499,41 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
           apply(detail.episode.segments);
           return;
         }
-        // not ready yet → poll again
-        timer = setTimeout(pollUntilScripted, 2000);
+        if (detail.scriptStatus === "error") {
+          fail(detail.scriptError || "Worker báo lỗi nhưng không kèm chi tiết.");
+          return;
+        }
+        // still running (or status not yet written) → keep the clock + poll again
+        startRunningClock();
+        timer = setTimeout(pollUntilSettled, SCRIPT_POLL_MS);
       } catch (e) {
-        if (!alive) return;
-        setScriptError(e instanceof Error ? e.message : "Không tải được kịch bản.");
-        setScriptLoading(false);
+        fail(e instanceof Error ? e.message : "Không tải được kịch bản.");
       }
     };
 
     // Kick off lazy gen (idempotent server-side): returns segments if already
-    // scripted, else an empty shell + enqueues the worker; then we poll.
+    // scripted, else an empty shell + (re)enqueues the worker; then we poll.
     generateEpisodeScript(episode.id)
       .then((ep) => {
         if (!alive) return;
         if (ep.segments && ep.segments.length > 0) apply(ep.segments);
-        else pollUntilScripted();
+        else {
+          startRunningClock();
+          pollUntilSettled();
+        }
       })
       .catch((e) => {
-        if (!alive) return;
-        setScriptError(e instanceof Error ? e.message : "Không tạo được kịch bản.");
-        setScriptLoading(false);
+        fail(e instanceof Error ? e.message : "Không tạo được kịch bản.");
       });
 
     return () => {
       alive = false;
-      if (timer) clearTimeout(timer);
+      stopTimers();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episode.id]);
+  }, [episode.id, scriptAttempt]);
+
+  const retryScript = () => setScriptAttempt((n) => n + 1);
 
   // ---- Produce: poll the real GenJob[] while a job is in flight ----
   const [produceError, setProduceError] = React.useState<string | null>(null);
@@ -557,7 +634,7 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
             variant="primary"
             size="md"
             icon="clapperboard"
-            disabled={starting || scriptLoading || segCount === 0}
+            disabled={starting || scriptPhase !== "done" || segCount === 0}
             onClick={onProduceClick}
           >
             {starting
@@ -603,16 +680,24 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
                   Mỗi đoạn gắn 1 hình ảnh
                 </span>
               </div>
-              {scriptLoading ? (
-                <div className="card" style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, boxShadow: "none" }}>
-                  <Icon name="loader" size={20} className="spin" style={{ color: "var(--brand)" }} />
-                  <span className="muted" style={{ fontSize: 14 }}>Đang viết kịch bản…</span>
-                </div>
-              ) : scriptError ? (
-                <div className="card" style={{ padding: 16, color: "#dc2626", display: "flex", gap: 8, boxShadow: "none" }}>
-                  <Icon name="alert-triangle" size={16} /> {scriptError}
-                </div>
-              ) : (
+              {scriptPhase === "error" ? (
+                <ErrorBox
+                  title="Lỗi khi viết kịch bản"
+                  detail={scriptError || "Không có chi tiết lỗi."}
+                  hint={
+                    <>
+                      Worker không tạo được kịch bản. Hãy kiểm tra{" "}
+                      <strong>provider / API key ở Cấu hình AI</strong>, rồi nhấn “Thử lại”.
+                      Sao chép nội dung lỗi dưới đây để gửi lại nếu cần hỗ trợ.
+                    </>
+                  }
+                  actions={
+                    <Button variant="primary" size="sm" icon="refresh-cw" onClick={retryScript}>
+                      Thử lại
+                    </Button>
+                  }
+                />
+              ) : scriptPhase === "done" ? (
                 <>
                   {(segments || []).map((seg, i) => (
                     <SegmentCard key={seg.id} seg={seg} idx={i} />
@@ -627,6 +712,29 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
                     <Icon name="plus" size={17} /> Thêm đoạn
                   </button>
                 </>
+              ) : (
+                // "loading" / "running": spinner + elapsed seconds; warn on stall.
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div className="card" style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, boxShadow: "none" }}>
+                    <Icon name="loader" size={20} className="spin" style={{ color: "var(--brand)" }} />
+                    <span className="muted" style={{ fontSize: 14 }}>
+                      ✍️ Đang viết kịch bản…
+                      {scriptPhase === "running" && ` (đã ${scriptElapsed} giây)`}
+                    </span>
+                  </div>
+                  {scriptStalled && (
+                    <ErrorBox
+                      title="Lâu hơn bình thường"
+                      detail={`Đã chờ ${scriptElapsed} giây mà chưa có kịch bản. Worker có thể đang bận hoặc không chạy. Hệ thống vẫn đang tiếp tục thử — bạn có thể bấm “Thử lại” để gửi lại yêu cầu.`}
+                      hint="Nếu chạy local, hãy kiểm tra tiến trình worker (Arq/Redis) còn sống không."
+                      actions={
+                        <Button variant="primary" size="sm" icon="refresh-cw" onClick={retryScript}>
+                          Thử lại
+                        </Button>
+                      }
+                    />
+                  )}
+                </div>
               )}
             </div>
           ) : (

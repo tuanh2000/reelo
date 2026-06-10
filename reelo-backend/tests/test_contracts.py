@@ -62,8 +62,10 @@ def test_segment_spec_index_is_one_based():
 def test_genjob_matches_ui_shape():
     job = GenJob(id="j1", name="Voice", icon="mic", state="running", progress=42)
     d = job.model_dump()
-    assert set(d.keys()) == {"id", "name", "icon", "state", "progress"}
+    # `stderr` is the copyable per-job error detail (None unless state == "error").
+    assert set(d.keys()) == {"id", "name", "icon", "state", "progress", "stderr"}
     assert d["state"] == "running"
+    assert d["stderr"] is None
 
 
 def test_aes_gcm_round_trip():

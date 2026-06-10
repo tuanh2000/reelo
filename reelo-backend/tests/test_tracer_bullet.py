@@ -331,9 +331,18 @@ async def test_tracer_bullet_worker_task_inline(tmp_path, monkeypatch):
     async def fake_flush(call_ctx):
         return 0
 
+    class _FakeEpisodeRepo:
+        def __init__(self, session):
+            pass
+
+        async def set_script_state(self, user_id, episode_id, status, error=None):
+            captured.setdefault("script_states", []).append((status, error))
+            return object()
+
     monkeypatch.setattr(tasks, "session_scope", fake_scope)
     monkeypatch.setattr(tasks, "build_call_context", fake_build_ctx)
     monkeypatch.setattr(tasks, "flush_call_context_usage", fake_flush)
+    monkeypatch.setattr(tasks, "EpisodeRepo", _FakeEpisodeRepo)
     import module1.persistence as pers
 
     monkeypatch.setattr(pers, "find_series_for_episode", fake_find)

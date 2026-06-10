@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import logging
 
-from clients.base import CallContext
+from clients.base import CallContext, InvalidKeyError, ProviderUnavailableError
 from db.keystore_backend import (
     flush_usage,
     load_user_keystore,
     new_buffering_usage_logger,
 )
-from db.repository import ApiKeyRepo, UsageRepo
+from db.repository import ApiKeyRepo, EpisodeRepo, UsageRepo
 from db.session import session_scope
 from keystore import KeyStore, build_cipher_from_settings
 from usage import UsageLogger
@@ -66,6 +66,32 @@ async def flush_call_context_usage(call_ctx: CallContext) -> int:
         return await flush_usage(UsageRepo(session), usage)
 
 
+def _script_error_message(exc: Exception, provider: str | None) -> str:
+    """A short, user-facing one-liner: error class + cause (+ provider when relevant).
+
+    Calls out the actionable cases the user can fix from "Cấu hình AI":
+    - ``InvalidKeyError`` → key invalid/expired for the script provider.
+    - ``ProviderUnavailableError`` → provider unreachable / no key / rate-limited.
+    - ``ScriptGenerationError`` (parse/validate retry budget) → model returned
+      malformed output.
+    Anything else falls back to ``"<ClassName>: <message>"``.
+    """
+    from module1.episode_script import ScriptGenerationError
+
+    msg = str(exc).strip() or repr(exc)
+    prov = f" (provider: {provider})" if provider else ""
+    if isinstance(exc, InvalidKeyError):
+        return f"InvalidKeyError{prov}: API key không hợp lệ hoặc đã hết hạn — {msg}"
+    if isinstance(exc, ProviderUnavailableError):
+        return (
+            f"ProviderUnavailableError{prov}: nhà cung cấp không khả dụng "
+            f"(thiếu key, bị chặn, hoặc rate-limit) — {msg}"
+        )
+    if isinstance(exc, ScriptGenerationError):
+        return f"ScriptGenerationError{prov}: model trả về kết quả không hợp lệ — {msg}"
+    return f"{type(exc).__name__}{prov}: {msg}"
+
+
 async def produce_episode(ctx: dict, user_id: str, episode_id: str) -> dict:
     """Module 2 entrypoint: materialize → assets → render → upload.
 
@@ -97,6 +123,12 @@ async def generate_script(ctx: dict, user_id: str, episode_id: str) -> dict:
     writes the updated episode back into ``spec_json`` (status→scripted), and
     flushes buffered usage. Idempotent: a scripted episode is a no-op.
 
+    Status surfacing (so the UI never spins forever on a dead worker): the
+    episode's ``script_status`` is set ``running`` on entry, ``done`` on success,
+    and ``error`` (with a short ``script_error`` message) if anything raises. The
+    full traceback is still logged to the worker log; the short message is what the
+    UI shows + lets the user copy.
+
     Returns:
         ``{"episode_id", "status", "segments": <count>}`` for logging/poll.
     """
@@ -106,26 +138,46 @@ async def generate_script(ctx: dict, user_id: str, episode_id: str) -> dict:
     from module1.persistence import find_series_for_episode, update_episode_in_series
 
     call_ctx = await build_call_context(ctx, user_id)
+    provider: str | None = None
     try:
         async with session_scope() as session:
             found = await find_series_for_episode(session, user_id, episode_id)
             if found is None:
                 raise ValueError(f"episode {episode_id} not found for user {user_id}")
             _, spec, ep = found
+            provider = (spec.providers or {}).get("script")
+            # Mark running + clear any stale error so the UI shows live progress.
+            await EpisodeRepo(session).set_script_state(user_id, episode_id, "running")
 
         if ep.segments:  # already scripted (§7 idempotency)
+            async with session_scope() as session:
+                await EpisodeRepo(session).set_script_state(user_id, episode_id, "done")
             return {"episode_id": episode_id, "status": ep.status, "segments": len(ep.segments)}
 
         updated = await generate_episode_script(spec, ep, call_ctx)
 
         async with session_scope() as session:
             await update_episode_in_series(session, user_id, spec.series_id, updated)
+            await EpisodeRepo(session).set_script_state(user_id, episode_id, "done")
 
         return {
             "episode_id": episode_id,
             "status": updated.status,
             "segments": len(updated.segments),
         }
+    except Exception as exc:
+        # Surface the failure on the episode so the UI can stop polling and show it
+        # (with a copyable message). Full traceback still goes to the worker log.
+        log.exception("generate_script failed user_id=%s episode_id=%s", user_id, episode_id)
+        message = _script_error_message(exc, provider)
+        try:
+            async with session_scope() as session:
+                await EpisodeRepo(session).set_script_state(
+                    user_id, episode_id, "error", message
+                )
+        except Exception as save_exc:  # noqa: BLE001 — error-state write is best-effort
+            log.warning("generate_script: could not record script_error (%s)", save_exc)
+        raise
     finally:
         try:
             await flush_call_context_usage(call_ctx)

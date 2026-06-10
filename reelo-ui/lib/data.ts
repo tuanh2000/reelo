@@ -105,6 +105,8 @@ export interface GenJob {
   icon: string;
   state: JobState;
   progress: number;
+  // Captured failure detail (copyable in the UI) — only set when state==="error".
+  stderr?: string | null;
 }
 
 // Internal client-side route (replace with a real router when wiring pages/URLs)

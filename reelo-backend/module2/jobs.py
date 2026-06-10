@@ -52,6 +52,8 @@ def row_to_genjob(row: GenJobRow) -> GenJob:
         icon=row.icon or ICONS.get(row.kind, "circle"),
         state=row.state,  # type: ignore[arg-type]
         progress=row.progress,
+        # Only surface captured stderr for failed jobs (copyable in the UI).
+        stderr=row.stderr if row.state == "error" else None,
     )
 
 
