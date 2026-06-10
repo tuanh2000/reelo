@@ -1,0 +1,35 @@
+# Story / storytelling skill — SCAFFOLD. Owned by Module 1.
+# TODO(module1): refine the structure, word_ratios, and rule_prompt_extra after
+# the religion reference proves out; add tradition-equivalent style_layers if a
+# narrative sub-genre needs a distinct visual context.
+
+id: story
+display_name: "Storytelling"
+
+script:
+  # Placeholder narrative arc; tune ratios against real episodes.
+  structure:
+    - hook
+    - setup
+    - rising_action
+    - climax
+    - resolution
+  word_ratios:
+    hook: 0.10
+    setup: 0.20
+    rising_action: 0.35
+    climax: 0.20
+    resolution: 0.15
+  rule_prompt_extra: |
+    TODO(module1): dramatic storytelling guidance. Strong cold-open hook, vivid
+    sensory scene-setting, escalating stakes, a clear turn at the climax, and a
+    resolution that lands the theme. Write for the ear; keep momentum.
+
+image:
+  recommended_preset: "cinematic"
+  default_aspect: "16:9"
+  style_layers: {}  # TODO(module1): add per-genre layers if needed.
+
+voice:
+  default_voice_id: null  # TODO(module1): pick a default storyteller voice.
+  settings: {}

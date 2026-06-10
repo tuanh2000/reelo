@@ -1,0 +1,39 @@
+# Image-style presets (D4). Owned by Module 1 (reelo-scriptwriting).
+#
+# Each preset has a base_prompt (English) + palette + description. The final
+# image prompt assembled by the Module 2 materializer is:
+#   preset.base_prompt + skill.style_layers[tradition]? + segment.image_prompt
+#
+# 6 UI presets (cinematic / documentary / animated / minimal / vintage / noir) +
+# painterly-devotional, whose base_prompt is the BASE STYLE block from the
+# religion skill (skill-tao-video-Youtube-ton-giao/SKILL.md, pasted verbatim).
+
+presets:
+  cinematic:
+    base_prompt: "Cinematic film still, dramatic three-point lighting with strong key light and soft fill, shallow depth of field, anamorphic widescreen composition, rich teal-and-amber color grade, volumetric atmosphere and subtle lens flare, high dynamic range, photoreal detail, no text, no watermark."
+    palette: ["#0b1d2a", "#1f4e5f", "#c89b3c", "#e8e3d3"]
+    description: "Cinematic, moody, high production value with a teal-and-amber grade."
+  documentary:
+    base_prompt: "Natural documentary photograph, realistic and journalistic, even available light, true-to-life color, neutral white balance, full depth of field with everything in focus, candid framing, fine photographic grain, no stylization, no text, no watermark."
+    palette: ["#2b2b2b", "#6b6b6b", "#a8a29e", "#f5f5f4"]
+    description: "Grounded, realistic, journalistic — looks like real footage."
+  animated:
+    base_prompt: "Stylized 2D animation, clean confident line art, flat vibrant cel-shaded colors with bold shapes, simple graphic backgrounds, smooth gradients, modern flat-illustration look reminiscent of high-end explainer animation, no photorealism, no text, no watermark."
+    palette: ["#ef3e36", "#0ea5e9", "#fde047", "#1e293b"]
+    description: "Bright, energetic flat 2D animation / explainer style."
+  minimal:
+    base_prompt: "Minimalist composition, generous negative space, a single clear focal subject, soft diffuse light, muted restrained palette, clean uncluttered background, calm and modern editorial feel, no text, no watermark."
+    palette: ["#111827", "#9ca3af", "#e5e7eb", "#ffffff"]
+    description: "Clean, minimal, lots of negative space."
+  vintage:
+    base_prompt: "Vintage analog film photograph, warm faded tones with lifted blacks, visible film grain and light leaks, gentle halation, slightly soft focus, nostalgic 1970s Kodachrome palette, subtle vignette, no text, no watermark."
+    palette: ["#6b4f2a", "#b08d57", "#c2a878", "#efe6d5"]
+    description: "Nostalgic, aged, warm analog-film look."
+  noir:
+    base_prompt: "High-contrast black-and-white film-noir still, hard directional key light casting deep shadows, chiaroscuro lighting, dramatic silhouettes, venetian-blind shadow patterns, smoky atmosphere, monochrome with crushed blacks and bright highlights, no text, no watermark."
+    palette: ["#000000", "#2b2b2b", "#6b6b6b", "#e5e5e5"]
+    description: "Dark, dramatic, high-contrast monochrome noir."
+  painterly-devotional:
+    base_prompt: "Soft painterly realism in the tradition of contemporary devotional illustration (similar to modern Bible-illustration art by Greg Olsen or Liz Lemon Swindle), naturalistic detail with a warm earth-tone palette (ochre, cream, deep terracotta, muted lapis blue, sage green), atmospheric lighting evoking golden hour or soft overcast daylight, cinematic widescreen landscape composition with depth and atmospheric perspective, expressive faces with authentic period clothing for the tradition, real-world settings (rolling hills, water, sky with distant birds, wildflowers in the foreground where appropriate), reverent and hopeful mood, gentle painted brushwork visible but not heavy, no photorealism but high level of painted detail, full-bleed cinematic frame with no decorative borders."
+    palette: ["#b06a32", "#8a6d3b", "#4a6072", "#7a8c5a", "#f5f0e6"]
+    description: "Reverent painterly devotional illustration (religion skill base style)."

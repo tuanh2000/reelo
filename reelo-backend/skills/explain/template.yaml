@@ -1,0 +1,34 @@
+# Explainer skill — SCAFFOLD. Owned by Module 1.
+# TODO(module1): refine structure/ratios/rule_prompt_extra after the religion
+# reference proves out.
+
+id: explain
+display_name: "Explainer"
+
+script:
+  # Placeholder explainer flow; tune against real episodes.
+  structure:
+    - hook
+    - question
+    - explanation
+    - example
+    - takeaway
+  word_ratios:
+    hook: 0.10
+    question: 0.15
+    explanation: 0.45
+    example: 0.20
+    takeaway: 0.10
+  rule_prompt_extra: |
+    TODO(module1): explainer guidance. Open with a relatable question, build one
+    idea at a time from first principles, use a concrete example or analogy, and
+    end with a crisp takeaway. Define jargon on first use; favour clarity.
+
+image:
+  recommended_preset: "minimal"
+  default_aspect: "16:9"
+  style_layers: {}  # TODO(module1)
+
+voice:
+  default_voice_id: null  # TODO(module1)
+  settings: {}

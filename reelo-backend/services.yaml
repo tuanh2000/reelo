@@ -1,0 +1,271 @@
+# Reelo service catalog — capabilities + auth + pricing per provider (BYOK).
+# Owned by Module 3 (reelo-ai-services). `GET /providers` and the registry load
+# from this file. Mirrors module-3-ai-service-manager.md §4.
+#
+# `GET /providers` derives from this file: per task, with cost_tier +
+# requires_key (derived: auth.type != none) + key_help_url.
+#
+# PRICING NOTES (per 1K tokens / per 1K chars / per image). These are placeholder
+# defaults a deployment SHOULD verify against current provider pricing pages;
+# values are configurable via this file (compute_cost reads them at call time).
+# Sources / as of 2026-06:
+#   - Claude (Anthropic): Opus 4.8 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per 1M
+#     tokens  -> per_1k_input/per_1k_output below. (claude-api skill, cached 2026-05)
+#   - OpenAI gpt-4o ~ $2.5/$10 per 1M (verify); gpt-image-1 ~ $0.04/image (verify).
+#   - Gemini 2.x free tier (BYOK): billed 0.0 here; paid tier verify on Google AI pricing.
+#   - DeepSeek deepseek-chat ~ $0.27/$1.10 per 1M (verify on platform.deepseek.com).
+#   - ElevenLabs: usage is credit-based; ~ $0.0003/char rough estimate (verify plan).
+#   - kie.ai: free credits; per_image left 0.0 (verify plan).
+#   - edge: free, keyless -> 0.0.
+
+services:
+  gemini:
+    display_name: "Gemini (Google AI Studio)"
+    client: "clients.gemini.GeminiClient"
+    cost_tier: free                       # free tier, but BYOK key required
+    auth: { type: key, key_ref: "google_aistudio" }
+    key_help_url: "https://aistudio.google.com/apikey"
+    tasks:
+      write-script:
+        models: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+        default_model: "gemini-2.5-flash"
+        supports_json_mode: true
+        supports_system_prompt: true
+      generate-image:
+        models: ["imagen-3.0-generate-002"]
+        default_model: "imagen-3.0-generate-002"
+        sizes: ["16:9", "9:16", "1:1", "4:3", "3:4"]
+    pricing:
+      # Free tier billed at zero; flip to paid-tier numbers if a deployment uses
+      # the paid Gemini API (verify on Google AI pricing).
+      write-script: { per_1k_input: 0.0, per_1k_output: 0.0 }
+      generate-image: { per_image: 0.0 }
+
+  chatgpt:
+    display_name: "ChatGPT (OpenAI)"
+    client: "clients.openai_compat.OpenAIStyleClient"
+    cost_tier: paid
+    auth: { type: key, key_ref: "openai", env: "OPENAI_API_KEY" }
+    key_help_url: "https://platform.openai.com/api-keys"
+    tasks:
+      write-script:
+        models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+        default_model: "gpt-4o"
+        supports_json_mode: true
+        supports_system_prompt: true
+      generate-image:
+        models: ["gpt-image-1"]
+        default_model: "gpt-image-1"
+        sizes: ["1024x1024", "1792x1024", "1024x1792"]
+    pricing:
+      # gpt-4o ~ $2.50 / $10.00 per 1M tokens (verify on OpenAI pricing).
+      write-script: { per_1k_input: 0.0025, per_1k_output: 0.01 }
+      generate-image: { per_image: 0.04 }
+
+  claude:
+    display_name: "Claude (Anthropic)"
+    client: "clients.anthropic.ClaudeClient"
+    cost_tier: paid
+    auth: { type: key, key_ref: "anthropic", env: "ANTHROPIC_API_KEY" }
+    key_help_url: "https://console.anthropic.com/settings/keys"
+    tasks:
+      write-script:
+        models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+        default_model: "claude-sonnet-4-6"   # balanced default for scriptwriting
+        supports_json_mode: true              # via forced tool-call
+        supports_system_prompt: true
+        max_tokens: 8192
+    pricing:
+      # Default model Sonnet 4.6: $3 / $15 per 1M tokens (claude-api skill, 2026-05).
+      # Opus 4.8 = 0.005/0.025; Haiku 4.5 = 0.001/0.005 if a deployment switches default.
+      write-script: { per_1k_input: 0.003, per_1k_output: 0.015 }
+
+  deepseek:
+    display_name: "DeepSeek"
+    client: "clients.openai_compat.OpenAIStyleClient"
+    cost_tier: paid                          # very cheap
+    auth: { type: key, key_ref: "deepseek", env: "DEEPSEEK_API_KEY" }
+    endpoint: "https://api.deepseek.com/v1"
+    key_help_url: "https://platform.deepseek.com/api_keys"
+    tasks:
+      write-script:
+        models: ["deepseek-chat", "deepseek-reasoner"]
+        default_model: "deepseek-chat"
+        supports_json_mode: true
+        supports_system_prompt: true
+    pricing:
+      # deepseek-chat ~ $0.27 / $1.10 per 1M tokens (verify on platform.deepseek.com).
+      write-script: { per_1k_input: 0.00027, per_1k_output: 0.0011 }
+
+  eleven:
+    display_name: "ElevenLabs"
+    client: "clients.skill_voice.SkillVoiceClient"
+    cost_tier: paid
+    auth: { type: key, key_ref: "elevenlabs", env: "ELEVENLABS_API_KEY" }
+    key_help_url: "https://elevenlabs.io/app/settings/api-keys"
+    tasks:
+      generate-voice:
+        default_voice_id: "JBFqnCBsd6RMkjVDRZzb"
+        models: ["eleven_multilingual_v2"]
+    pricing:
+      # Credit-based; ~ $0.0003/char rough estimate (verify against the plan tier).
+      generate-voice: { per_1k_chars: 0.30 }
+
+  edge:
+    display_name: "Edge-TTS (free)"
+    client: "clients.edge_tts.EdgeTTSClient"
+    cost_tier: free
+    auth: { type: none }                  # the only keyless provider
+    tasks:
+      generate-voice:
+        voices_by_language:
+          vi: "vi-VN-HoaiMyNeural"
+          en: "en-US-AndrewNeural"
+          ja: "ja-JP-NanamiNeural"
+          es: "es-ES-AlvaroNeural"
+          fr: "fr-FR-DeniseNeural"
+        char_limit: 8000
+    pricing:
+      generate-voice: { per_1k_chars: 0.0 }
+
+  omnivoice:
+    display_name: "Giọng clone (OmniVoice)"
+    client: "clients.omnivoice.OmniVoiceClient"
+    # Reelo-hosted GPU compute (k2-fsa OmniVoice). NOT a BYOK provider: keyless
+    # from the user's side (auth type none); availability is gated on the
+    # OMNIVOICE_URL env / `endpoint` below. Requires a per-series uploaded voice
+    # sample (POST /series/{id}/voice-sample) — selected explicitly in Setup, so
+    # it is intentionally NOT in routing.fallback below.
+    cost_tier: paid                       # Reelo GPU compute (not user BYOK)
+    auth: { type: none }
+    key_help_url: null
+    # endpoint: "http://localhost:8002"   # optional override; else OMNIVOICE_URL env
+    tasks:
+      generate-voice:
+        # Zero-shot clone: 600+ languages; no fixed voice list. The reference
+        # sample + transcript come from the series voice_sample at produce time.
+        mode: clone
+        char_limit: 6000
+    pricing:
+      # Reelo-hosted GPU; per-1k-chars placeholder a deployment SHOULD set to its
+      # real amortized GPU cost. Verify against your host's $/GPU-hour.
+      generate-voice: { per_1k_chars: 0.0 }
+
+  kie:
+    display_name: "kie.ai"
+    client: "clients.skill_image.SkillImageClient"
+    cost_tier: free                       # free credits, still needs a key
+    auth: { type: key, key_ref: "kie", env: "KIE_API_KEY" }
+    key_help_url: "https://kie.ai"
+    tasks:
+      generate-image:
+        sizes: ["16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "1:1"]
+        default_size: "16:9"
+    pricing:
+      # Free credits; verify per-image credit cost on the kie.ai plan.
+      generate-image: { per_image: 0.0 }
+
+  web-commons:
+    display_name: "Web · Ảnh thật (Commons)"
+    client: "clients.commons_image.CommonsImageClient"
+    cost_tier: free                       # keyless: no API key to generate
+    auth: { type: none }                  # web-* photo providers are keyless
+    key_help_url: null
+    # Tunables read by CommonsImageClient (search size / robustness).
+    search_limit: 15
+    timeout: 30
+    retries: 2
+    tasks:
+      generate-image:
+        # Real photos: any aspect; the renderer pillarboxes/Ken-Burns to frame.
+        sizes: ["16:9", "9:16", "1:1", "4:3", "3:4"]
+        default_size: "16:9"
+        # Only Public Domain / CC0 / CC-BY raster images are downloaded
+        # (CC-BY-NC / -ND / fair-use are rejected). Enforced in the client.
+        license_filter: ["public-domain", "cc0", "cc-by"]
+    pricing:
+      generate-image: { per_image: 0.0 }
+
+  web-pexels:
+    display_name: "Web · Video clip (Pexels)"
+    client: "clients.pexels_video.PexelsVideoClient"
+    cost_tier: free                       # free content, but BYOK key required
+    auth: { type: key, key_ref: "pexels", env: "PEXELS_API_KEY" }
+    key_help_url: "https://www.pexels.com/api/"
+    # Tunables read by PexelsVideoClient (search size / robustness).
+    timeout: 30
+    retries: 2
+    tasks:
+      generate-image:
+        # Real video clips fit to any aspect; the renderer scale/crops to frame.
+        sizes: ["16:9", "9:16", "1:1", "4:3", "3:4"]
+        default_size: "16:9"
+        search_limit: 15
+        # media_type="video" candidates; Pexels License (CC0-like, free for
+        # commercial use). Mixed with web-commons photos in the curate grid.
+    pricing:
+      # Pexels API is free (BYOK key); no per-clip charge.
+      generate-image: { per_image: 0.0 }
+
+  # ---- scaffolds (is_available=False so fallback skips them) ----------------
+  hf:
+    display_name: "HuggingFace (scaffold)"
+    client: "clients.hf.HuggingFaceClient"
+    cost_tier: paid
+    auth: { type: key, key_ref: "huggingface", env: "HF_API_KEY" }
+    key_help_url: "https://huggingface.co/settings/tokens"
+    tasks:
+      generate-voice: { models: [] }
+
+  sd:
+    display_name: "Stable Diffusion (scaffold)"
+    client: "clients.sd.StableDiffusionClient"
+    cost_tier: paid
+    auth: { type: key, key_ref: "stability", env: "STABILITY_API_KEY" }
+    key_help_url: "https://platform.stability.ai/account/keys"
+    tasks:
+      generate-image: { sizes: ["1:1", "16:9", "9:16"] }
+
+  # ---- stub providers (keyless; for Module 1 & 2 tests / local dev) ---------
+  # Not in routing.fallback, so they never leak into a real run unless selected
+  # explicitly by provider id.
+  stub-script:
+    display_name: "Stub Script (test)"
+    client: "clients.stub.EchoScriptClient"
+    cost_tier: free
+    auth: { type: none }
+    tasks:
+      write-script: { supports_json_mode: true, supports_system_prompt: true }
+    pricing:
+      write-script: { per_1k_input: 0.0, per_1k_output: 0.0 }
+
+  stub-voice:
+    display_name: "Stub Voice (test)"
+    client: "clients.stub.SilentVoiceClient"
+    cost_tier: free
+    auth: { type: none }
+    tasks:
+      generate-voice: { voices_by_language: { vi: "stub-voice", en: "stub-voice" } }
+    pricing:
+      generate-voice: { per_1k_chars: 0.0 }
+
+  stub-image:
+    display_name: "Stub Image (test)"
+    client: "clients.stub.PlaceholderImageClient"
+    cost_tier: free
+    auth: { type: none }
+    tasks:
+      generate-image: { sizes: ["16:9", "9:16", "1:1", "4:3", "3:4"], default_size: "16:9" }
+    pricing:
+      generate-image: { per_image: 0.0 }
+
+routing:
+  # BYOK-aware fallback: only providers the user actually has a key for are used.
+  # Stub providers are intentionally excluded.
+  fallback:
+    write-script: ["claude", "chatgpt", "gemini", "deepseek"]
+    generate-voice: ["eleven", "edge", "hf"]
+    # web-commons is keyless, so it's always usable as a fallback; placed after
+    # the generative providers since the user picks it explicitly in Setup.
+    # web-pexels (video clips) is BYOK; only usable when the user has a Pexels key.
+    generate-image: ["kie", "gemini", "chatgpt", "web-commons", "web-pexels", "sd"]

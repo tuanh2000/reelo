@@ -1,0 +1,15 @@
+# OmniVoice reference microservice — GPU/CUDA host only.
+#
+# torch/torchaudio must match the host CUDA toolkit; install the matching wheels
+# from https://pytorch.org/get-started/locally/ before this file if needed, e.g.:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# The model itself (k2-fsa/OmniVoice, Qwen3-0.6B) is pulled from HuggingFace on
+# first load. Do NOT install this on macOS/CPU — use OMNIVOICE_MOCK=1 there.
+torch
+torchaudio
+omnivoice
+soundfile
+fastapi
+uvicorn[standard]
+python-multipart

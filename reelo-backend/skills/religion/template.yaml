@@ -1,0 +1,92 @@
+# Religion skill template (reference). Owned by Module 1 (reelo-scriptwriting).
+# Distilled from skill-tao-video-Youtube-ton-giao/SKILL.md (the 3-layer method,
+# BASE STYLE, tradition-specific layers, voice defaults).
+#
+# Consumed by:
+#   Module 1 — script.structure + word_ratios (chunk planning, §8),
+#              script.rule_prompt_extra (appended to the system prompt, §9),
+#              image.style_layers[tradition] → ImageStyle.style_layer (D4),
+#              voice.* → VoiceConfig defaults.
+#   Module 2 — image.style_layers prepend, image.default_aspect → --size + render.
+
+id: religion
+display_name: "Religion & History (scholarly)"
+
+script:
+  # Five-part scholarly structure; the three middle layers are the heart (§3).
+  structure:
+    - hook
+    - context
+    - layer_literal
+    - layer_theological
+    - layer_practical
+    - closing
+  # Word distribution across the script. The "layers" umbrella covers all
+  # layer_* sections and is split evenly among them by the chunk planner.
+  word_ratios:
+    hook: 0.08
+    context: 0.18
+    layers: 0.60
+    closing: 0.14
+  rule_prompt_extra: |
+    Audience: this audience is ALREADY a believer or practitioner. Write to deepen
+    their understanding, not to convert or summarize for outsiders.
+
+    Follow the scholarly three-layer method across the whole episode:
+    - hook: open with the practitioner's puzzle (a question they've privately
+      wondered, a verse that seems to contradict another). Never open with
+      "Today we're going to talk about...".
+    - context: anchor the text + tradition + moment. Name the original language
+      (Pali, Koine Greek, Classical Arabic, Sanskrit, Hebrew, etc.) and the key
+      terms that will recur.
+    - layer_literal: what the text literally says in its original language and
+      immediate context (zahir / peshat / shabda): translation choices, grammar,
+      original-audience meaning.
+    - layer_theological: how the tradition reads it; cite specific commentators
+      (e.g. Augustine, Aquinas, al-Ghazali, Nagarjuna, Sankara, Rashi,
+      Maimonides) where appropriate. Never skip this layer.
+    - layer_practical: how someone actually lives this, using the tradition's own
+      practical vocabulary (sadhana, mitzvot, ihsan, sila, etc.). Concrete, not
+      sentimental.
+    - closing: restate the hook's puzzle and show how the layered reading resolved
+      it; end with a question to sit with, not an action item.
+
+    Tone rules: treat the tradition's claims on their own terms; define each
+    specialist term the first time; cite passages by reference (book/chapter/verse,
+    sutra name, surah and ayah) so practitioners can verify; no filler; write for
+    the ear (short sentences). If unsure of a commentator's view or a verse number,
+    say "the tradition broadly holds..." or omit it — practitioners check.
+
+    Image prompts (always English): name specific iconography, posture, objects,
+    and palette — never "a peaceful religious scene". Honor iconographic rules:
+    Islam — never depict the Prophet Muhammad, other prophets, or angels in
+    figural form (use the Kaaba, an open Mushaf, hands raised in du'a, mosque
+    interiors, calligraphy); traditional Judaism — avoid graven-image depictions
+    of God; Buddhism — correct mudras; Hinduism — match attributes to the specific
+    deity. Never mix one tradition's aesthetics into another's video.
+
+image:
+  recommended_preset: "painterly-devotional"
+  default_aspect: "16:9"
+  # Per-tradition context layer, appended after the preset base_prompt (D4).
+  # Verbatim distillation of the SKILL.md "Tradition-specific style additions".
+  style_layers:
+    buddhism_theravada: "Set in ancient India or Sri Lanka, monks in saffron robes, gentle tropical landscape (banyan and bodhi trees, lotus ponds, stupas in the distance), warm sunlit palette filtered through leaves. Follow traditional mudras when showing the Buddha or bodhisattvas."
+    buddhism_mahayana: "Himalayan landscape with monasteries, monks in maroon robes, prayer flags fluttering, snow-capped peaks in the distance, cool clear high-altitude light. Follow traditional mudras."
+    christianity_western: "First-century Galilee or Judea, period-accurate Jewish dress (linen tunics, head wraps, sandals), Sea of Galilee or rolling hills with olive trees in the background, warm Mediterranean golden-hour light."
+    christianity_orthodox: "Byzantine Empire setting, iconographic restraint in poses (frontal teaching positions, gentle gestures), gold-touched light without overt halos, monastic stone architecture; use icon conventions when showing Christ or saints."
+    islam: "Arabian, Persian, or Andalusian landscape with mosque architecture (domes, minarets, courtyards with fountains), worshippers in traditional dress, calligraphy on walls. NO figural depictions of the Prophet Muhammad, other prophets, or angels — use the Kaaba, an open Mushaf on a stand, hands raised in du'a, mosque interiors filled with worshippers, oil lamps, Qur'anic calligraphy."
+    hinduism: "Lush Indian setting (Himalayan foothills, the Ganges, banyan trees, temple complexes, ashrams), sages and devotees in traditional Indian dress, warm sunlit golden palette, deities depicted with correct iconography for their specific identity (Vishnu's attributes vs Shiva's vs Devi's — not generic)."
+    judaism: "Ancient Israel landscape (Jerusalem, Mount Sinai, the Negev desert, Galilee), figures in period Jewish dress (tallit, tzitzit where appropriate), Torah scrolls, warm Mediterranean light. Avoid depicting the divine Name or attempting to picture God."
+    sikhism: "Punjab landscape with golden mustard fields, gurdwaras (especially the Harmandir Sahib / Golden Temple), figures with dastars (turbans) and kirpans, devotees doing seva, warm sunlit palette."
+    taoism_confucianism: "Classical Chinese landscape (misty mountains, pine trees, scholars by streams, traditional courtyard architecture), sages in flowing robes, atmospheric mist and clouds, soft palette of greens, blues, and earth tones."
+    jainism: "Ancient Indian setting with Jain temples (Shikhar style), ascetics in white robes, pastoral peaceful surroundings, soft warm palette."
+
+voice:
+  # ElevenLabs "George" — warm British storyteller (SKILL.md Step 7).
+  default_voice_id: "JBFqnCBsd6RMkjVDRZzb"
+  settings:
+    stability: 0.55
+    similarity_boost: 0.75
+    style: 0.35
+    speed: 0.92

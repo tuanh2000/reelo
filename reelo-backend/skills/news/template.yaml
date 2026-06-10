@@ -1,0 +1,34 @@
+# News skill — SCAFFOLD. Owned by Module 1.
+# TODO(module1): refine structure/ratios/rule_prompt_extra after the religion
+# reference proves out.
+
+id: news
+display_name: "Fast News"
+
+script:
+  # Placeholder bulletin flow; tune against real episodes.
+  structure:
+    - headline
+    - context
+    - details
+    - analysis
+    - outlook
+  word_ratios:
+    headline: 0.10
+    context: 0.20
+    details: 0.35
+    analysis: 0.25
+    outlook: 0.10
+  rule_prompt_extra: |
+    TODO(module1): news guidance. Lead with the headline fact, give just-enough
+    context, report verified details, offer brief analysis, and close with what to
+    watch next. Neutral register; attribute claims; avoid speculation as fact.
+
+image:
+  recommended_preset: "documentary"
+  default_aspect: "16:9"
+  style_layers: {}  # TODO(module1)
+
+voice:
+  default_voice_id: null  # TODO(module1)
+  settings: {}

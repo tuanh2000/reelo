@@ -1,0 +1,15 @@
+# Secrets
+.env
+.env.local
+
+# Generated video projects (each can be 50-200 MB)
+projects/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db

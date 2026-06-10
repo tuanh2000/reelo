@@ -1,0 +1,68 @@
+# ───────────────────────── Secrets — NEVER commit ─────────────────────────
+.env
+.env.*
+!.env.example
+**/cookie.json
+**/cookie.txt
+**/*.pem
+**/*.key
+**/secrets.*
+.claude/settings.local.json
+
+# ───────────────── Third-party / dropped from the system ─────────────────
+# gemini-web2api: reverse-engineered, removed from Reelo (SaaS), has its own
+# git repo + embedded cookie/api-key. Do not publish.
+/gemini-web2api/
+/youtuber-ai.zip
+
+# ───────────────────── Generated output / large media ─────────────────────
+/output/
+**/projects/            # skill-generated video projects (large mp4/png)
+**/clips/               # render intermediates
+verify-output/
+*.mp4
+*.mov
+*.webm
+
+# ─────────────────────────── Python ───────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.eggs/
+build/
+dist/
+.python-version
+
+# Model / HuggingFace caches (OmniVoice etc. run on a separate GPU host)
+.cache/
+**/.cache/
+*.ckpt
+*.safetensors
+
+# ─────────────────────────── Node / Next.js ───────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ─────────────────────────── OS / editor ───────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
