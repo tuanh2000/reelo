@@ -231,16 +231,56 @@ export async function generateEpisodeScript(episodeId: string): Promise<EpisodeS
   return data.episode;
 }
 
+/** Signed asset URLs for an assembled episode (review player + thumbnails). */
+export interface EpisodeAssets {
+  videoUrl: string | null;
+  srtUrl: string | null;
+  thumbnails: string[];
+}
+export interface EpisodeDetail {
+  seriesId: string;
+  episode: EpisodeSpec;
+  assets: EpisodeAssets;
+}
+/**
+ * Fetch a single episode's live spec (status/segments/youtube) + signed asset
+ * URLs. Used to (a) poll until lazy script gen flips status to `scripted`, and
+ * (b) source the rendered video + thumbnails for the review screen without first
+ * POSTing to /publish/export.
+ */
+export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
+  const data = await request<{
+    series_id: string;
+    episode: EpisodeSpec;
+    assets: { videoUrl: string | null; srtUrl: string | null; thumbnails: string[] };
+  }>(`/episodes/${episodeId}`);
+  return {
+    seriesId: data.series_id,
+    episode: data.episode,
+    assets: {
+      videoUrl: data.assets?.videoUrl ?? null,
+      srtUrl: data.assets?.srtUrl ?? null,
+      thumbnails: data.assets?.thumbnails ?? [],
+    },
+  };
+}
+
 /** Asset generation pipeline (poll progress) ----------------------------- */
+export interface CostEstimate {
+  images: number;
+  voice_chars: number;
+  estimated_cost?: number | null;
+  note?: string | null;
+}
 export async function startGeneration(
   seriesId: string,
   episodeId: string,
-): Promise<{ jobId: string }> {
-  const data = await request<{ jobId: string; cost_estimate?: unknown }>(
+): Promise<{ jobId: string; costEstimate?: CostEstimate | null }> {
+  const data = await request<{ jobId: string; cost_estimate?: CostEstimate | null }>(
     "/generation/start",
     { method: "POST", json: { series_id: seriesId, episode_id: episodeId } },
   );
-  return { jobId: data.jobId };
+  return { jobId: data.jobId, costEstimate: data.cost_estimate ?? null };
 }
 export async function pollGeneration(jobId: string): Promise<GenJob[]> {
   const data = await request<{ jobs: GenJob[] }>(`/generation/${jobId}`);

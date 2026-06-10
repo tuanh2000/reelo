@@ -291,8 +291,17 @@ export function ImageSelectScreen({ nav, route }: { nav: Nav; route: Route }) {
     setError(null);
     try {
       await saveImageSelection(episode.id, chosen);
-      await startGeneration(series.id, episode.id);
-      nav({ name: "workspace", series, episode, toast: "Đã lưu lựa chọn — bắt đầu sản xuất!" });
+      const { jobId } = await startGeneration(series.id, episode.id);
+      // Hand the live job to the workspace so it opens straight into the
+      // producing view and polls real progress.
+      nav({
+        name: "workspace",
+        series,
+        episode,
+        jobId,
+        producing: true,
+        toast: "Đã lưu lựa chọn — bắt đầu sản xuất!",
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lưu lựa chọn thất bại.");
       setSaving(false);

@@ -18,6 +18,7 @@ import {
   type Episode,
   type EpisodeStatus,
 } from "@/lib/data";
+import { listSeries } from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
   return (
@@ -89,7 +90,29 @@ function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series
 }
 
 export function ProjectScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
+  // Start from the series handed in by the dashboard; refresh its episode list
+  // (titles/statuses) from the backend on mount so the project view reflects the
+  // latest produce/publish progress. Falls back to the static seed only when no
+  // series was routed in (offline demo).
+  const [series, setSeries] = React.useState<Series>(route.series || SERIES[0]);
+
+  React.useEffect(() => {
+    if (!route.series) return; // demo / no real series → keep seed
+    let alive = true;
+    listSeries()
+      .then((all) => {
+        if (!alive) return;
+        const fresh = all.find((s) => s.id === route.series!.id);
+        if (fresh) setSeries(fresh);
+      })
+      .catch(() => {
+        /* keep the routed-in copy on network error */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [route.series]);
+
   const sk = skillOf(series.skill);
   const done = pubCount(series);
   const total = series.episodes.length;

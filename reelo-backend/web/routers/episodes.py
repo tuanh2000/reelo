@@ -24,9 +24,12 @@ from db.repository import ApiKeyRepo, EpisodeRepo
 from keystore import build_cipher_from_settings
 from module1.persistence import find_series_for_episode
 from module2 import curation as cur
+from storage import get_storage
 from usage import UsageLogger
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
+    EpisodeAssets,
+    EpisodeDetailResponse,
     EpisodeScriptResponse,
     ImageCandidatesResponse,
     ImageSelectionRequest,
@@ -46,6 +49,40 @@ async def _media_ctx(user_id: str, db: DbSession) -> CallContext:
     cipher = build_cipher_from_settings()
     keys = await load_user_keystore(ApiKeyRepo(db), cipher, user_id)
     return CallContext(user_id=user_id, keys=keys, usage=UsageLogger())
+
+
+@router.get("/{episode_id}", response_model=EpisodeDetailResponse)
+async def get_episode(
+    episode_id: str, user_id: CurrentUser, db: DbSession
+) -> EpisodeDetailResponse:
+    """Fetch one episode's current spec + signed asset URLs (poll / review source).
+
+    - 404 if the episode is missing.
+    - ``episode`` reflects live ``status`` / ``segments`` / ``youtube`` (the UI
+      polls this after lazy script gen and after produce).
+    - ``assets`` carries signed URLs (``videoUrl`` / ``srtUrl`` / ``thumbnails``)
+      once the runner has written ``paths`` (final / srt / thumbnails); empty
+      otherwise. Signed URLs are minted fresh per call (they expire).
+    """
+    found = await find_series_for_episode(db, user_id, episode_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"episode {episode_id} not found"
+        )
+    series_row, _, ep = found
+
+    ep_row = await EpisodeRepo(db).get(user_id, episode_id)
+    paths = (ep_row.paths or {}) if ep_row is not None else {}
+    storage = get_storage()
+    assets = EpisodeAssets()
+    if paths.get("final"):
+        assets.video_url = await storage.signed_url(paths["final"])
+    if paths.get("srt"):
+        assets.srt_url = await storage.signed_url(paths["srt"])
+    thumb_keys = [t for t in (paths.get("thumbnails") or "").split(",") if t]
+    assets.thumbnails = [await storage.signed_url(t) for t in thumb_keys]
+
+    return EpisodeDetailResponse(series_id=series_row.id, episode=ep, assets=assets)
 
 
 @router.post("/{episode_id}/script", response_model=EpisodeScriptResponse)

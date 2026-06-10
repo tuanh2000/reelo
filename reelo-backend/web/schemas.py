@@ -95,6 +95,35 @@ class EpisodeScriptResponse(BaseModel):
     episode: EpisodeSpec
 
 
+class EpisodeAssets(BaseModel):
+    """Signed asset URLs for an assembled episode (review screen player + thumbs).
+
+    All optional: an episode that is not assembled yet has none. ``thumbnails`` is
+    a list (0..3) of signed URLs in stable order so the UI can index by
+    ``thumbnailIndex``.
+    """
+
+    video_url: str | None = Field(default=None, alias="videoUrl")
+    srt_url: str | None = Field(default=None, alias="srtUrl")
+    thumbnails: list[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class EpisodeDetailResponse(BaseModel):
+    """``GET /episodes/{id}`` — full episode spec + signed asset URLs + series id.
+
+    Lets the UI (project/workspace/review) refetch a single episode's current
+    ``status`` / ``segments`` / ``youtube`` (after lazy script gen or produce) and,
+    once assembled, play the rendered video + show thumbnails without first
+    POSTing to ``/publish/export``.
+    """
+
+    series_id: str
+    episode: EpisodeSpec
+    assets: EpisodeAssets = Field(default_factory=EpisodeAssets)
+
+
 # --------------------------------------------------------------------------- #
 # Style (Module 1)                                                            #
 # --------------------------------------------------------------------------- #

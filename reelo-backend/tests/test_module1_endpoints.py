@@ -30,6 +30,8 @@ FAKE_USER_ID = "u_test"
 class Store:
     def __init__(self) -> None:
         self.series: dict[str, SeriesSpec] = {}
+        # episode_id -> object with .paths (signed-asset source for GET /episodes/{id})
+        self.episodes: dict[str, object] = {}
 
     def episode_index(self) -> dict[str, str]:
         return {ep.episode_id: sid for sid, sp in self.series.items() for ep in sp.episodes}
@@ -63,7 +65,18 @@ def m1_client(store, monkeypatch):
             return None
         sp = store.series[sid]
         ep = next(e for e in sp.episodes if e.episode_id == episode_id)
-        return object(), sp, ep
+        return _Row(sp), sp, ep
+
+    class FakeEpisodeRepo:
+        def __init__(self, session):
+            pass
+
+        async def get(self, user_id, episode_id):
+            return store.episodes.get(episode_id)
+
+    class FakeStorage:
+        async def signed_url(self, key, **kw):
+            return f"https://signed/{key}"
 
     class FakeSeriesRepo:
         def __init__(self, session):
@@ -90,6 +103,8 @@ def m1_client(store, monkeypatch):
     # episodes router
     monkeypatch.setattr(episodes_router, "find_series_for_episode", fake_find_for_episode)
     monkeypatch.setattr(episodes_router, "enqueue_job", fake_enqueue)
+    monkeypatch.setattr(episodes_router, "EpisodeRepo", FakeEpisodeRepo)
+    monkeypatch.setattr(episodes_router, "get_storage", lambda: FakeStorage())
     # series router
     monkeypatch.setattr(series_router, "save_series_spec", fake_save)
     monkeypatch.setattr(series_router, "SeriesRepo", FakeSeriesRepo)
@@ -326,6 +341,44 @@ def test_episode_script_idempotent_when_scripted(m1_client):
 
 def test_episode_script_404(m1_client):
     assert m1_client.post("/episodes/missing/script").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# GET /episodes/{id}  → spec + signed asset URLs                              #
+# --------------------------------------------------------------------------- #
+class _EpRow:
+    def __init__(self, paths):
+        self.paths = paths
+
+
+def test_get_episode_returns_spec_and_no_assets_when_draft(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    resp = m1_client.get("/episodes/e1")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["series_id"] == "s1"
+    assert body["episode"]["episode_id"] == "e1"
+    assert body["assets"]["videoUrl"] is None
+    assert body["assets"]["thumbnails"] == []
+
+
+def test_get_episode_returns_signed_assets_when_assembled(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.episodes["e1"] = _EpRow(  # type: ignore[attr-defined]
+        {
+            "final": "projects/u/e1/final.mp4",
+            "srt": "projects/u/e1/subs.srt",
+            "thumbnails": "projects/u/e1/thumbnails/thumb_1.png,projects/u/e1/thumbnails/thumb_2.png",
+        }
+    )
+    body = m1_client.get("/episodes/e1").json()
+    assert body["assets"]["videoUrl"].endswith("final.mp4")
+    assert body["assets"]["srtUrl"].endswith("subs.srt")
+    assert len(body["assets"]["thumbnails"]) == 2
+
+
+def test_get_episode_404(m1_client):
+    assert m1_client.get("/episodes/missing").status_code == 404
 
 
 # --------------------------------------------------------------------------- #

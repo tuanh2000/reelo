@@ -5,9 +5,34 @@
 import React from "react";
 import { Icon, Badge, Button, Card, Progress, Placeholder, Segmented } from "@/components/ui";
 import { SERIES, type Nav, type Route } from "@/lib/data";
+import { getEpisode, publishToYouTube, type EpisodeDetail, type ExportResult } from "@/lib/api";
 
-function VideoPlayer({ title }: { title: string }) {
+// Real <video> player when a signed final.mp4 URL is available; otherwise a
+// placeholder (asset not rendered yet / offline demo).
+function VideoPlayer({ title, src }: { title: string; src: string | null }) {
   const [playing, setPlaying] = React.useState(false);
+  const ref = React.useRef<HTMLVideoElement>(null);
+  const toggle = () => {
+    const v = ref.current;
+    if (!v) return;
+    if (v.paused) void v.play().catch(() => {});
+    else v.pause();
+  };
+  if (src) {
+    return (
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <video
+          ref={ref}
+          src={src}
+          controls
+          style={{ width: "100%", aspectRatio: "16/9", background: "#0b0b0d", display: "block" }}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+        />
+      </div>
+    );
+  }
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ position: "relative", aspectRatio: "16/9", background: "#0b0b0d", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -28,7 +53,7 @@ function VideoPlayer({ title }: { title: string }) {
           </span>
         </span>
         <button
-          onClick={() => setPlaying((p) => !p)}
+          onClick={toggle}
           style={{
             position: "relative",
             width: 72,
@@ -44,23 +69,6 @@ function VideoPlayer({ title }: { title: string }) {
           }}
         >
           <Icon name={playing ? "pause" : "play"} size={28} />
-        </button>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: "var(--surface)" }}>
-        <button className="icon-btn" style={{ width: 34, height: 34 }} onClick={() => setPlaying((p) => !p)}>
-          <Icon name={playing ? "pause" : "play"} size={17} />
-        </button>
-        <span className="mono subtle" style={{ fontSize: 12 }}>
-          0:00
-        </span>
-        <div className="progress" style={{ flex: 1, height: 6 }}>
-          <div className="progress-fill" style={{ width: playing ? "34%" : "0%", background: "var(--brand)", transition: "width 1s linear" }} />
-        </div>
-        <span className="mono subtle" style={{ fontSize: 12 }}>
-          9:42
-        </span>
-        <button className="icon-btn" style={{ width: 34, height: 34 }}>
-          <Icon name="maximize" size={16} />
         </button>
       </div>
     </div>
@@ -99,33 +107,79 @@ function TagInput({ tags, setTags }: { tags: string[]; setTags: (t: string[]) =>
   );
 }
 
+function asStr(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+function asTags(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
+}
+
 export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
   const series = route.series || SERIES[0];
   const episode = route.episode || series.episodes[2];
   const [stage, setStage] = React.useState<"idle" | "uploading" | "done">("idle");
-  const [progress, setProgress] = React.useState(0);
   const [thumb, setThumb] = React.useState(0);
-  const [tags, setTags] = React.useState<string[]>(["tôngiáo", "lịchsử", "vănminhcổđại", "sumer"]);
-  const [vis, setVis] = React.useState("public");
+  const [vis, setVis] = React.useState<"public" | "unlisted" | "private">("public");
+  const [error, setError] = React.useState<string | null>(null);
 
-  // TODO(backend): replace this simulated upload with api.publishToYouTube().
+  // Live asset URLs + AI-suggested metadata (fetched from the episode).
+  const [detail, setDetail] = React.useState<EpisodeDetail | null>(null);
+  const [result, setResult] = React.useState<ExportResult | null>(null);
+  const [title, setTitle] = React.useState(`${episode.title} | ${series.name}`);
+  const [desc, setDesc] = React.useState("");
+  const [tags, setTags] = React.useState<string[]>([]);
+  const seeded = React.useRef(false);
+
   React.useEffect(() => {
-    if (stage !== "uploading") return;
-    const iv = setInterval(
-      () =>
-        setProgress((p) => {
-          const n = p + 6 + Math.random() * 8;
-          if (n >= 100) {
-            clearInterval(iv);
-            setTimeout(() => setStage("done"), 400);
-            return 100;
-          }
-          return n;
-        }),
-      260,
-    );
-    return () => clearInterval(iv);
-  }, [stage]);
+    if (!route.episode) return; // offline/demo seed → keep placeholders
+    let alive = true;
+    getEpisode(episode.id)
+      .then((d) => {
+        if (!alive) return;
+        setDetail(d);
+        // Seed editable metadata from the episode's youtube block once.
+        if (!seeded.current) {
+          const yt = d.episode.youtube || {};
+          if (asStr(yt.title)) setTitle(asStr(yt.title));
+          if (asStr(yt.description)) setDesc(asStr(yt.description));
+          const t = asTags(yt.tags);
+          if (t.length) setTags(t);
+          seeded.current = true;
+        }
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : "Không tải được dữ liệu tập.");
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode.id]);
+
+  const thumbnails = detail?.assets.thumbnails ?? [];
+  const videoUrl = result?.videoUrl ?? detail?.assets.videoUrl ?? null;
+  const srtUrl = result?.srtUrl ?? detail?.assets.srtUrl ?? null;
+
+  // Export (v1): backend returns signed URLs + metadata; the user uploads to YT.
+  const onExport = async () => {
+    setStage("uploading");
+    setError(null);
+    try {
+      const res = await publishToYouTube(series.id, episode.id, {
+        title,
+        description: desc,
+        tags,
+        visibility: vis,
+        thumbnailIndex: thumb,
+      });
+      setResult(res);
+      setStage("done");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Xuất video thất bại.");
+      setStage("idle");
+    }
+  };
 
   if (stage === "done") {
     return (
@@ -146,23 +200,26 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
           >
             <Icon name="check" size={38} strokeWidth={3} />
           </span>
-          <h2 style={{ fontSize: 24, marginBottom: 8 }}>Đã xuất bản lên YouTube! 🎉</h2>
+          <h2 style={{ fontSize: 24, marginBottom: 8 }}>Video đã sẵn sàng! 🎉</h2>
           <p className="muted" style={{ fontSize: 15, marginBottom: 22, lineHeight: 1.6 }}>
-            “{episode.title}” đang được xử lý trên YouTube và sẽ public trong vài phút.
+            “{title}” đã được xuất. Tải video, phụ đề và thumbnail bên dưới rồi đăng lên YouTube.
           </p>
-          <div className="card" style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, textAlign: "left", boxShadow: "none", marginBottom: 22 }}>
-            <Placeholder label="thumbnail" style={{ width: 96, height: 54, flex: "none" }} rounded="rounded-lg" />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {episode.title}
-              </div>
-              <a href="#" onClick={(e) => e.preventDefault()} className="mono" style={{ fontSize: 12, color: "var(--brand)" }}>
-                youtube.com/watch?v=r33lo…
+          <div className="card" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, textAlign: "left", boxShadow: "none", marginBottom: 22 }}>
+            {videoUrl && (
+              <a className="btn btn-secondary btn-sm" href={videoUrl} target="_blank" rel="noreferrer" download>
+                <Icon name="download" size={15} /> Tải video (.mp4)
               </a>
-            </div>
-            <Button variant="secondary" size="sm" icon="external-link">
-              Mở
-            </Button>
+            )}
+            {srtUrl && (
+              <a className="btn btn-secondary btn-sm" href={srtUrl} target="_blank" rel="noreferrer" download>
+                <Icon name="captions" size={15} /> Tải phụ đề (.srt)
+              </a>
+            )}
+            {result?.thumbnailUrl && (
+              <a className="btn btn-secondary btn-sm" href={result.thumbnailUrl} target="_blank" rel="noreferrer" download>
+                <Icon name="image" size={15} /> Tải thumbnail
+              </a>
+            )}
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
             <Button variant="secondary" size="md" icon="layout-dashboard" onClick={() => nav({ name: "dashboard" })}>
@@ -191,16 +248,22 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
         </p>
       </div>
 
+      {error && (
+        <div className="card" style={{ padding: 14, marginBottom: 16, color: "#dc2626", display: "flex", gap: 8 }}>
+          <Icon name="alert-triangle" size={16} /> {error}
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1.25fr 1fr", gap: 22, alignItems: "start" }}>
         {/* left: player + thumbs */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <VideoPlayer title={episode.title} />
+          <VideoPlayer title={episode.title} src={videoUrl} />
           <Card style={{ padding: 16 }}>
             <div className="label" style={{ marginBottom: 10 }}>
               Chọn thumbnail
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-              {[0, 1, 2].map((i) => (
+              {(thumbnails.length ? thumbnails : [null, null, null]).map((url, i) => (
                 <button
                   key={i}
                   onClick={() => setThumb(i)}
@@ -213,7 +276,16 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
                     background: "none",
                   }}
                 >
-                  <Placeholder label={`thumb ${i + 1}`} style={{ aspectRatio: "16/9" }} rounded="rounded-lg" />
+                  {url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={url}
+                      alt={`thumb ${i + 1}`}
+                      style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block", borderRadius: 12 }}
+                    />
+                  ) : (
+                    <Placeholder label={`thumb ${i + 1}`} style={{ aspectRatio: "16/9" }} rounded="rounded-lg" />
+                  )}
                   {thumb === i && (
                     <span
                       style={{
@@ -255,14 +327,15 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div>
               <span className="label">Tiêu đề</span>
-              <input className="field" defaultValue={`${episode.title} | ${series.name}`} />
+              <input className="field" value={title} onChange={(e) => setTitle(e.target.value)} />
             </div>
             <div>
               <span className="label">Mô tả</span>
               <textarea
                 className="field"
                 rows={5}
-                defaultValue={`Khám phá ${episode.title.toLowerCase()} trong hành trình tìm hiểu ${series.topic.toLowerCase()}.\n\n📌 Mục lục\n00:00 Mở đầu\n01:20 Bối cảnh lịch sử\n04:45 Những vị thần chính\n08:10 Di sản còn lại\n\n#Reelo #${series.topic.replace(/\s/g, "")}`}
+                value={desc}
+                onChange={(e) => setDesc(e.target.value)}
               />
             </div>
             <div>
@@ -273,7 +346,7 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
               <span className="label">Chế độ hiển thị</span>
               <Segmented
                 value={vis}
-                onChange={setVis}
+                onChange={(v) => setVis(v as "public" | "unlisted" | "private")}
                 options={[
                   { value: "public", label: "Công khai", icon: "globe" },
                   { value: "unlisted", label: "Không liệt kê", icon: "link" },
@@ -289,28 +362,25 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <span style={{ fontWeight: 700, fontSize: 14, display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <Icon name="loader" size={16} className="spin" style={{ color: "var(--brand)" }} /> Đang tải lên YouTube…
-                </span>
-                <span className="mono" style={{ fontSize: 13, fontWeight: 700 }}>
-                  {Math.round(progress)}%
+                  <Icon name="loader" size={16} className="spin" style={{ color: "var(--brand)" }} /> Đang xuất video…
                 </span>
               </div>
-              <Progress value={progress} height={9} />
+              <Progress value={100} height={9} />
             </div>
           ) : (
             <button
               className="btn btn-primary btn-lg"
               style={{ width: "100%", height: 54, fontSize: 16 }}
-              onClick={() => {
-                setProgress(0);
-                setStage("uploading");
-              }}
+              disabled={!videoUrl}
+              onClick={onExport}
             >
-              <Icon name="youtube" size={22} /> Upload lên YouTube
+              <Icon name="youtube" size={22} /> Xuất video
             </button>
           )}
           <p className="subtle" style={{ fontSize: 12, textAlign: "center", marginTop: 10 }}>
-            Kết nối tới kênh “{series.name}” · Tài khoản đã xác thực
+            {videoUrl
+              ? "v1: tải video + metadata về để tự đăng lên YouTube."
+              : "Video chưa dựng xong — quay lại bước sản xuất."}
           </p>
         </Card>
       </div>

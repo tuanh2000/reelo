@@ -121,6 +121,12 @@ export interface Route {
   episode?: Episode;
   // Carries the in-progress create-series state through the wizard flow.
   draft?: SeriesDraft;
+  // Generation job id carried image-select/workspace → workspace producing view
+  // (and so a reopened workspace can resume polling an in-flight produce).
+  jobId?: string;
+  // When set, workspace opens straight into the producing view (e.g. arriving
+  // back from image-select after startGeneration was already called).
+  producing?: boolean;
   toast?: string;
 }
 

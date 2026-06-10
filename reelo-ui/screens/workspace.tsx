@@ -4,12 +4,28 @@
 
 import React from "react";
 import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble } from "@/components/ui";
-import { SERIES, PIPELINE, SCRIPT_SEGMENTS, GEN_JOBS, type Nav, type Route, type GenJob, type ScriptSegment } from "@/lib/data";
+import { SERIES, PIPELINE, type Nav, type Route, type GenJob, type ScriptSegment } from "@/lib/data";
+import {
+  generateEpisodeScript,
+  getEpisode,
+  startGeneration,
+  pollGeneration,
+  retryChild,
+  type CostEstimate,
+  type SegmentSpec,
+} from "@/lib/api";
 
-// Web-photo image providers (web-commons; the web-* family) offer a human image
-// curation step before produce; AI providers (kie/gemini/openai/sd) auto-pick.
+// Web media providers offer a human curation step before produce: the aggregate
+// `web` plus the `web-*` family (web-commons photos / web-pexels clips). AI
+// providers (kie/gemini/openai/sd) auto-pick — no selection step.
 function isWebPhotoProvider(providerId: string): boolean {
-  return providerId.startsWith("web-");
+  return providerId === "web" || providerId.startsWith("web-");
+}
+
+// Poll cadence + a stop predicate shared by the producing view.
+const POLL_MS = 1500;
+function allTerminal(jobs: GenJob[]): boolean {
+  return jobs.length > 0 && jobs.every((j) => j.state === "done" || j.state === "error");
 }
 
 function PipelineRail({ doneIds, activeId, onJump }: { doneIds: string[]; activeId: string; onJump?: (id: string) => void }) {
@@ -114,7 +130,7 @@ function SegmentCard({ seg, idx }: { seg: ScriptSegment; idx: number }) {
   );
 }
 
-function JobRow({ job }: { job: GenJob }) {
+function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => void }) {
   const stateMap = {
     done: { c: "#16a34a", t: "Xong", ic: "check-circle-2" },
     running: { c: "var(--brand)", t: "Đang chạy", ic: "loader" },
@@ -149,7 +165,7 @@ function JobRow({ job }: { job: GenJob }) {
         <Progress value={job.progress} height={6} tone={job.state === "error" ? "#dc2626" : job.state === "done" ? "#16a34a" : "var(--brand)"} />
       </div>
       {job.state === "error" && (
-        <Button variant="soft" size="sm" icon="refresh-cw">
+        <Button variant="soft" size="sm" icon="refresh-cw" onClick={() => onRetry && onRetry(job.id)}>
           Thử lại
         </Button>
       )}
@@ -157,8 +173,17 @@ function JobRow({ job }: { job: GenJob }) {
   );
 }
 
-function ProducingView({ jobs, onDone }: { jobs: GenJob[]; onDone: () => void }) {
-  const allDone = jobs.every((j) => j.state === "done");
+function ProducingView({
+  jobs,
+  onDone,
+  onRetry,
+}: {
+  jobs: GenJob[];
+  onDone: () => void;
+  onRetry: (childId: string) => void;
+}) {
+  const allDone = jobs.length > 0 && jobs.every((j) => j.state === "done");
+  const hasError = jobs.some((j) => j.state === "error");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div
@@ -184,14 +209,26 @@ function ProducingView({ jobs, onDone }: { jobs: GenJob[]; onDone: () => void })
             flex: "none",
           }}
         >
-          <Icon name={allDone ? "party-popper" : "loader"} size={24} className={allDone ? "" : "spin"} />
+          <Icon
+            name={allDone ? "party-popper" : hasError ? "alert-triangle" : "loader"}
+            size={24}
+            className={allDone || hasError ? "" : "spin"}
+          />
         </span>
         <div style={{ flex: 1 }}>
-          <h3 style={{ fontSize: 17 }}>{allDone ? "Đã dựng xong video!" : "Đang sản xuất tập này…"}</h3>
+          <h3 style={{ fontSize: 17 }}>
+            {allDone
+              ? "Đã dựng xong video!"
+              : hasError
+                ? "Một số bước gặp lỗi"
+                : "Đang sản xuất tập này…"}
+          </h3>
           <p className="muted" style={{ fontSize: 13.5, marginTop: 3 }}>
             {allDone
               ? "Tất cả asset đã sẵn sàng. Sang bước duyệt để xuất bản."
-              : "Bạn có thể đóng tab — tiến độ được lưu tự động và tiếp tục sau."}
+              : hasError
+                ? "Nhấn “Thử lại” ở bước bị lỗi để chạy lại phần còn thiếu."
+                : "Bạn có thể đóng tab — tiến độ được lưu tự động và tiếp tục sau."}
           </p>
         </div>
         {allDone && (
@@ -202,9 +239,14 @@ function ProducingView({ jobs, onDone }: { jobs: GenJob[]; onDone: () => void })
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {jobs.map((j) => (
-          <JobRow key={j.id} job={j} />
-        ))}
+        {jobs.length === 0 ? (
+          <div className="card" style={{ padding: 16, boxShadow: "none", display: "flex", alignItems: "center", gap: 10 }}>
+            <Icon name="loader" size={18} className="spin" style={{ color: "var(--brand)" }} />
+            <span className="muted" style={{ fontSize: 13.5 }}>Đang khởi tạo các bước sản xuất…</span>
+          </div>
+        ) : (
+          jobs.map((j) => <JobRow key={j.id} job={j} onRetry={onRetry} />)
+        )}
       </div>
 
       <div className="card" style={{ padding: 16 }}>
@@ -313,52 +355,184 @@ function ToneChat() {
   );
 }
 
+/** Map an api SegmentSpec to the editor's ScriptSegment shape. */
+function specToScript(seg: SegmentSpec): ScriptSegment {
+  return { id: `seg${seg.index}`, text: seg.narration, img: seg.image_prompt };
+}
+
+// Derive which pipeline rail steps are done from the real child GenJob[].
+function railFromJobs(jobs: GenJob[]): { doneIds: string[]; activeId: string } {
+  const byKind = (pred: (id: string) => boolean) => jobs.filter((j) => pred(j.id));
+  const done = (arr: GenJob[]) => arr.length > 0 && arr.every((j) => j.state === "done");
+  const voiceJobs = byKind((id) => id.includes("voice"));
+  const imageJobs = byKind((id) => id.includes("image") || id.includes("img"));
+  const renderJobs = byKind((id) => id.includes("render"));
+  const doneIds = ["script"];
+  if (done(voiceJobs)) doneIds.push("voice");
+  if (done(imageJobs)) doneIds.push("images");
+  if (done(renderJobs)) doneIds.push("assemble");
+  const allDone = jobs.length > 0 && jobs.every((j) => j.state === "done");
+  let activeId = "voice";
+  if (allDone) activeId = "review";
+  else if (done(voiceJobs) && !done(imageJobs)) activeId = "images";
+  else if (done(imageJobs) && !done(renderJobs)) activeId = "assemble";
+  return { doneIds, activeId };
+}
+
 export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
   const series = route.series || SERIES[0];
   const episode = route.episode || series.episodes.find((e) => e.status !== "published") || series.episodes[0];
-  const [stage, setStage] = React.useState<"edit" | "producing">("edit");
-  const [jobs, setJobs] = React.useState<GenJob[]>(GEN_JOBS);
+  // If we navigated in with a live job (from image-select after startGeneration,
+  // or a resumed produce), open straight into the producing view.
+  const [stage, setStage] = React.useState<"edit" | "producing">(
+    route.producing || route.jobId ? "producing" : "edit",
+  );
+  const [jobId, setJobId] = React.useState<string | null>(route.jobId ?? null);
+  const [jobs, setJobs] = React.useState<GenJob[]>([]);
 
-  // animate jobs when producing
-  // TODO(backend): replace this timer-driven simulation with api.startGeneration()
-  // + api.pollGeneration() to reflect real job progress.
+  // ---- Script segments (lazy gen) ----
+  const [segments, setSegments] = React.useState<ScriptSegment[] | null>(null);
+  const [scriptLoading, setScriptLoading] = React.useState(true);
+  const [scriptError, setScriptError] = React.useState<string | null>(null);
+
+  // Load (and if needed lazily generate) the episode script, then poll the
+  // episode until it is scripted. Demo/offline: a missing backend surfaces as an
+  // error banner but the screen stays usable.
   React.useEffect(() => {
-    if (stage !== "producing") return;
-    setJobs(GEN_JOBS.map((j) => ({ ...j })));
-    const iv = setInterval(() => {
-      setJobs((prev) => {
-        const next = prev.map((j) => ({ ...j }));
-        const running = next.find((j) => j.state === "running");
-        if (running) {
-          running.progress = Math.min(100, running.progress + 7 + Math.random() * 9);
-          if (running.progress >= 100) {
-            running.progress = 100;
-            running.state = "done";
-            const q = next.find((j) => j.state === "queued");
-            if (q) q.state = "running";
-          }
-        } else {
-          const q = next.find((j) => j.state === "queued");
-          if (q) q.state = "running";
-        }
-        return next;
-      });
-    }, 420);
-    return () => clearInterval(iv);
-  }, [stage]);
+    if (!route.series || !route.episode) {
+      // Offline/demo seed — no real episode to script.
+      setScriptLoading(false);
+      return;
+    }
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    setScriptLoading(true);
+    setScriptError(null);
 
-  const doneIds =
-    stage === "producing"
-      ? [
-          "script",
-          ...(jobs.find((j) => j.id === "j-render")?.state === "done"
-            ? ["voice", "images", "assemble"]
-            : jobs.every((j) => j.id === "j-render" || j.state === "done")
-              ? ["voice", "images"]
-              : ["voice"]),
-        ]
-      : ["script"];
-  const activeId = stage === "producing" ? (jobs.every((j) => j.state === "done") ? "review" : "images") : "script";
+    const apply = (segs: SegmentSpec[]) => {
+      if (!alive) return;
+      setSegments(segs.map(specToScript));
+      setScriptLoading(false);
+    };
+
+    const pollUntilScripted = async () => {
+      try {
+        const detail = await getEpisode(episode.id);
+        if (!alive) return;
+        if (detail.episode.segments && detail.episode.segments.length > 0) {
+          apply(detail.episode.segments);
+          return;
+        }
+        // not ready yet → poll again
+        timer = setTimeout(pollUntilScripted, 2000);
+      } catch (e) {
+        if (!alive) return;
+        setScriptError(e instanceof Error ? e.message : "Không tải được kịch bản.");
+        setScriptLoading(false);
+      }
+    };
+
+    // Kick off lazy gen (idempotent server-side): returns segments if already
+    // scripted, else an empty shell + enqueues the worker; then we poll.
+    generateEpisodeScript(episode.id)
+      .then((ep) => {
+        if (!alive) return;
+        if (ep.segments && ep.segments.length > 0) apply(ep.segments);
+        else pollUntilScripted();
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setScriptError(e instanceof Error ? e.message : "Không tạo được kịch bản.");
+        setScriptLoading(false);
+      });
+
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode.id]);
+
+  // ---- Produce: poll the real GenJob[] while a job is in flight ----
+  const [produceError, setProduceError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (stage !== "producing" || !jobId) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      try {
+        const next = await pollGeneration(jobId);
+        if (!alive) return;
+        setJobs(next);
+        if (!allTerminal(next)) {
+          timer = setTimeout(tick, POLL_MS);
+        }
+      } catch (e) {
+        if (!alive) return;
+        setProduceError(e instanceof Error ? e.message : "Mất kết nối khi theo dõi tiến độ.");
+        // back off but keep trying so transient errors recover
+        timer = setTimeout(tick, POLL_MS * 2);
+      }
+    };
+    tick();
+
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [stage, jobId]);
+
+  // Start generation (AI providers go straight here; web-* curate first).
+  const [starting, setStarting] = React.useState(false);
+  const beginProduce = async () => {
+    setStarting(true);
+    setProduceError(null);
+    try {
+      const { jobId: id, costEstimate } = await startGeneration(series.id, episode.id);
+      if (costEstimate && (costEstimate.images || costEstimate.voice_chars)) {
+        const note = costEstimate.note ? `\n${costEstimate.note}` : "";
+        const ok = window.confirm(
+          `Sản xuất tập này sẽ tạo ${costEstimate.images} ảnh và ~${costEstimate.voice_chars} ký tự giọng đọc.${note}\n\nTiếp tục?`,
+        );
+        if (!ok) {
+          setStarting(false);
+          return;
+        }
+      }
+      setJobId(id);
+      setJobs([]);
+      setStage("producing");
+    } catch (e) {
+      setProduceError(e instanceof Error ? e.message : "Không bắt đầu được quá trình sản xuất.");
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const onProduceClick = () => {
+    // Web media providers curate real photos/clips first.
+    if (isWebPhotoProvider(series.providers.image)) {
+      nav({ name: "image-select", series, episode });
+    } else {
+      void beginProduce();
+    }
+  };
+
+  const onRetry = async (childId: string) => {
+    if (!jobId) return;
+    try {
+      const next = await retryChild(jobId, childId);
+      setJobs(next);
+    } catch (e) {
+      setProduceError(e instanceof Error ? e.message : "Thử lại thất bại.");
+    }
+  };
+
+  const rail = stage === "producing" ? railFromJobs(jobs) : { doneIds: ["script"], activeId: "script" };
+  const doneIds = rail.doneIds;
+  const activeId = rail.activeId;
+  const segCount = segments?.length ?? 0;
 
   return (
     <div className="page page-wide" style={{ height: "100%", display: "flex", flexDirection: "column", paddingBottom: 24 }}>
@@ -378,17 +552,14 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
             variant="primary"
             size="md"
             icon="clapperboard"
-            onClick={() => {
-              // Web-photo image providers (web-commons) curate real photos first:
-              // route to the image-selection step. AI providers produce directly.
-              if (isWebPhotoProvider(series.providers.image)) {
-                nav({ name: "image-select", series, episode });
-              } else {
-                setStage("producing");
-              }
-            }}
+            disabled={starting || scriptLoading || segCount === 0}
+            onClick={onProduceClick}
           >
-            {isWebPhotoProvider(series.providers.image) ? "Chọn ảnh & Sản xuất" : "Sản xuất tập này"}
+            {starting
+              ? "Đang bắt đầu…"
+              : isWebPhotoProvider(series.providers.image)
+                ? "Chọn ảnh & Sản xuất"
+                : "Sản xuất tập này"}
           </Button>
         ) : (
           <Button variant="secondary" size="md" icon="pen-line" onClick={() => setStage("edit")}>
@@ -396,6 +567,12 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
           </Button>
         )}
       </div>
+
+      {produceError && (
+        <div className="card" style={{ padding: 12, marginBottom: 14, color: "#dc2626", display: "flex", gap: 8 }}>
+          <Icon name="alert-triangle" size={16} /> {produceError}
+        </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "224px 1fr 332px", gap: 20 }}>
         {/* left: pipeline */}
@@ -416,20 +593,37 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div className="card" style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 10, background: "var(--surface-2)", boxShadow: "none" }}>
                 <Icon name="pen-line" size={17} style={{ color: "var(--brand)" }} />
-                <span style={{ fontWeight: 700, fontSize: 14 }}>Kịch bản · {SCRIPT_SEGMENTS.length} đoạn</span>
+                <span style={{ fontWeight: 700, fontSize: 14 }}>Kịch bản · {segCount} đoạn</span>
                 <span className="subtle" style={{ fontSize: 12.5, marginLeft: "auto" }}>
                   Mỗi đoạn gắn 1 hình ảnh
                 </span>
               </div>
-              {SCRIPT_SEGMENTS.map((seg, i) => (
-                <SegmentCard key={seg.id} seg={seg} idx={i} />
-              ))}
-              <button className="btn btn-ghost btn-md" style={{ border: "1.5px dashed var(--border-strong)", color: "var(--text-2)" }}>
-                <Icon name="plus" size={17} /> Thêm đoạn
-              </button>
+              {scriptLoading ? (
+                <div className="card" style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, boxShadow: "none" }}>
+                  <Icon name="loader" size={20} className="spin" style={{ color: "var(--brand)" }} />
+                  <span className="muted" style={{ fontSize: 14 }}>Đang viết kịch bản…</span>
+                </div>
+              ) : scriptError ? (
+                <div className="card" style={{ padding: 16, color: "#dc2626", display: "flex", gap: 8, boxShadow: "none" }}>
+                  <Icon name="alert-triangle" size={16} /> {scriptError}
+                </div>
+              ) : (
+                <>
+                  {(segments || []).map((seg, i) => (
+                    <SegmentCard key={seg.id} seg={seg} idx={i} />
+                  ))}
+                  <button className="btn btn-ghost btn-md" style={{ border: "1.5px dashed var(--border-strong)", color: "var(--text-2)" }}>
+                    <Icon name="plus" size={17} /> Thêm đoạn
+                  </button>
+                </>
+              )}
             </div>
           ) : (
-            <ProducingView jobs={jobs} onDone={() => nav({ name: "review", series, episode })} />
+            <ProducingView
+              jobs={jobs}
+              onRetry={onRetry}
+              onDone={() => nav({ name: "review", series, episode, jobId: jobId ?? undefined })}
+            />
           )}
         </div>
 
