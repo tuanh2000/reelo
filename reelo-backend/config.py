@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     # episodes) can legitimately exceed arq's 300s default, so we raise it; the
     # *provider* fail-fast (clients/claude_cli.py per-call cap) is what prevents a
     # single wedged CLI call from eating this whole budget.
-    worker_job_timeout: int = Field(default=600, alias="WORKER_JOB_TIMEOUT")
+    worker_job_timeout: int = Field(default=1200, alias="WORKER_JOB_TIMEOUT")
     # Total attempts per job. 1 = no auto-retry: tasks already do their own
     # internal retries (e.g. Module 1's ≤3 parse retries) and surface errors on
     # the episode, so an arq-level retry of a hung/failed job just multiplies the

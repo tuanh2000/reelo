@@ -93,17 +93,20 @@ services:
     tasks:
       write-script:
         models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
-        default_model: "claude-sonnet-4-6"   # balanced default for scriptwriting
+        # Haiku (CLI alias -> latest Haiku 4.5). Chunked scriptwriting over the
+        # CLI is slow on Sonnet (~400s/episode, chunks wedging past the cap);
+        # Haiku is ~3-5x faster and keeps the run on the user's free subscription.
+        default_model: "haiku"
         # The CLI has no response_format; Module 1's sentinel/JSON-from-text
         # parser handles structured output, so we advertise JSON mode as false.
         supports_json_mode: false
         supports_system_prompt: true          # via --system-prompt
-        # Per-CALL fail-fast cap (one `claude -p` single-turn chunk). A single
-        # turn answers in seconds; if it hasn't returned in this window the CLI
-        # is wedged (bad token / non-interactive env) and the client kills it +
-        # raises ProviderUnavailableError instead of hanging to the job timeout.
-        # The client clamps this to _MAX_CALL_TIMEOUT (150s) regardless.
-        timeout: 120
+        # Per-CALL fail-fast cap for ONE chunk. Generation chunks emit a lot of
+        # JSON and can take a while; 240s gives slow Haiku chunks room without a
+        # wedged CLI eating the whole arq job_timeout. Client clamps to
+        # _MAX_CALL_TIMEOUT (300s). A whole multi-chunk script relies on the
+        # larger worker job_timeout (WORKER_JOB_TIMEOUT, 1200s).
+        timeout: 240
     pricing:
       # Billed to the user's Claude subscription, not Reelo — record zero cost.
       write-script: { per_1k_input: 0.0, per_1k_output: 0.0 }

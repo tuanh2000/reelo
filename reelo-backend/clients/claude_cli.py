@@ -77,18 +77,20 @@ from usage import compute_cost
 # under this env var; the CLI uses it as a bearer token in headless mode.
 _TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _KEY_REF_DEFAULT = "claude_oauth"
-_DEFAULT_MODEL = "claude-sonnet-4-6"
-# Per-CALL fail-fast cap. One ``claude -p`` single-turn chunk responds in seconds;
-# if it has not returned in this window the CLI is wedged (bad headless env /
-# token / stdin) and we kill it + raise rather than letting it eat the whole arq
-# job_timeout (and trigger pointless 300s×N retries). A whole script is many
-# chunks, so the *job* timeout (worker/settings.py) is larger than this.
-_DEFAULT_TIMEOUT = 120.0  # seconds — single-turn chunk; kill + fail-fast past this
-# Hard upper bound for one CLI call, even if services.yaml configures more. A
-# single ``claude -p`` turn never legitimately needs minutes; anything longer is
-# a wedge, so we clamp here and rely on fail-fast + the arq job_timeout for the
-# whole multi-chunk script.
-_MAX_CALL_TIMEOUT = 150.0
+# Haiku (CLI alias -> latest Haiku 4.5): chunked scriptwriting over the CLI is
+# slow on Sonnet; Haiku is much faster and stays on the user's free subscription.
+_DEFAULT_MODEL = "haiku"
+# Per-CALL fail-fast cap for ONE generation chunk. A chunk emits a lot of JSON
+# and can take tens of seconds (even on Haiku); if it has not returned in this
+# window the CLI is wedged (bad headless env / token / stdin) and we kill it +
+# raise rather than letting it eat the whole arq job_timeout. A whole script is
+# many chunks, so the *job* timeout (worker/settings.py, WORKER_JOB_TIMEOUT) is
+# much larger than this.
+_DEFAULT_TIMEOUT = 240.0  # seconds — one chunk; kill + fail-fast past this
+# Hard upper bound for one CLI call, even if services.yaml configures more, so a
+# wedged CLI can never run unbounded. The arq job_timeout covers the full
+# multi-chunk script.
+_MAX_CALL_TIMEOUT = 300.0
 
 
 class ClaudeCliClient(AIClient):
