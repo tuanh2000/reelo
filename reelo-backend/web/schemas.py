@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from models.jobs import GenJob
 from models.spec import Density, EpisodeSpec, ImageStyle, SeriesSpec, Skill, VoiceConfig
@@ -153,6 +153,27 @@ class SaveSeriesRequest(BaseModel):
 
 class SaveSeriesResponse(BaseModel):
     series: SeriesSpec
+
+
+class RenameSeriesRequest(BaseModel):
+    """``PATCH /series/{id}`` — rename only.
+
+    ``name`` is trimmed and length-validated (1–120 chars after stripping) so the
+    UI's inline rename can send a bare ``{name}`` without round-tripping the whole
+    spec. Leading/trailing whitespace is stripped by the validator.
+    """
+
+    name: str = Field(..., min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("name must not be empty")
+        if len(trimmed) > 120:
+            raise ValueError("name must be at most 120 characters")
+        return trimmed
 
 
 # --------------------------------------------------------------------------- #

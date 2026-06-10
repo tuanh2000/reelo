@@ -148,6 +148,24 @@ class SeriesRepo:
         )
         return res.scalar_one_or_none()
 
+    async def rename(self, user_id: str, series_id: str, name: str) -> Series | None:
+        """Rename a series, keeping the ``name`` column and ``spec_json.name`` in sync.
+
+        Scoped by ``user_id`` (returns ``None`` when the series is missing / not
+        owned). Updates both the denormalized ``Series.name`` column AND the
+        ``name`` inside the JSONB ``spec_json`` (the source of truth) so the two
+        never drift. The caller is responsible for validating/trimming ``name``.
+        """
+        row = await self.get(user_id, series_id)
+        if row is None:
+            return None
+        row.name = name
+        spec = dict(row.spec_json or {})
+        spec["name"] = name
+        row.spec_json = spec
+        await self.s.flush()
+        return row
+
     async def upsert(
         self,
         *,

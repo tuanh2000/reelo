@@ -99,6 +99,14 @@ def m1_client(store, monkeypatch):
             sp = store.series.get(series_id)
             return _Row(sp) if sp else None
 
+        async def rename(self, user_id, series_id, name):
+            sp = store.series.get(series_id)
+            if sp is None:
+                return None
+            renamed = sp.model_copy(update={"name": name})
+            store.series[series_id] = renamed
+            return _Row(renamed)
+
     def fake_spec_from_row(row):
         return row.spec
 
@@ -377,6 +385,30 @@ def test_update_series_uses_path_id(m1_client):
     resp = m1_client.put("/series/s1", json={"series": updated.model_dump()})
     assert resp.status_code == 200
     assert resp.json()["series"]["name"] == "Renamed"
+
+
+def test_rename_series_updates_name(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    resp = m1_client.patch("/series/s1", json={"name": "  New Name  "})
+    assert resp.status_code == 200, resp.text
+    # trimmed + returned in the listSeries item shape ({series: SeriesSpec})
+    assert resp.json()["series"]["name"] == "New Name"
+    assert m1_client.store.series["s1"].name == "New Name"  # type: ignore[attr-defined]
+
+
+def test_rename_series_404_when_missing(m1_client):
+    resp = m1_client.patch("/series/nope", json={"name": "X"})
+    assert resp.status_code == 404
+
+
+def test_rename_series_rejects_empty(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    assert m1_client.patch("/series/s1", json={"name": "   "}).status_code == 422
+
+
+def test_rename_series_rejects_too_long(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    assert m1_client.patch("/series/s1", json={"name": "x" * 121}).status_code == 422
 
 
 # --------------------------------------------------------------------------- #

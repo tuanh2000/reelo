@@ -159,6 +159,19 @@ export async function saveSeries(spec: SeriesSpec): Promise<Series> {
   return specToSeries(data.series);
 }
 
+/**
+ * Rename a series (PATCH /series/{id}). Sends only `{name}`; the backend trims
+ * and length-validates it (1–120 chars), updates both the series row and the
+ * spec, and returns the updated series projected onto the UI `Series` shape.
+ */
+export async function renameSeries(seriesId: string, name: string): Promise<Series> {
+  const data = await request<{ series: SeriesSpec }>(`/series/${seriesId}`, {
+    method: "PATCH",
+    json: { name },
+  });
+  return specToSeries(data.series);
+}
+
 export async function createSeries(spec: SeriesSpec): Promise<SeriesSpec> {
   const data = await request<{ series: SeriesSpec }>("/series", {
     method: "POST",

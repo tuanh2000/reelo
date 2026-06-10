@@ -21,6 +21,7 @@ from web._voice_sample import (
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     MusicUploadResponse,
+    RenameSeriesRequest,
     SaveSeriesRequest,
     SaveSeriesResponse,
     SeriesListResponse,
@@ -59,6 +60,24 @@ async def update_series(
     spec = body.series.model_copy(update={"series_id": series_id})
     await save_series_spec(db, user_id, spec)
     return SaveSeriesResponse(series=spec)
+
+
+@router.patch("/{series_id}", response_model=SaveSeriesResponse)
+async def rename_series(
+    series_id: str, body: RenameSeriesRequest, user_id: CurrentUser, db: DbSession
+) -> SaveSeriesResponse:
+    """Rename a series (maps ``renameSeries(id, name)``).
+
+    Updates both the denormalized ``Series.name`` column and ``spec_json.name``
+    (kept in sync by the repo). Returns the updated series in the same shape as a
+    ``listSeries`` item. 404 when the series is missing / not owned by the user.
+    """
+    row = await SeriesRepo(db).rename(user_id, series_id, body.name)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"series {series_id} not found"
+        )
+    return SaveSeriesResponse(series=spec_from_row(row))
 
 
 @router.post("/{series_id}/music", response_model=MusicUploadResponse)

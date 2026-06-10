@@ -19,7 +19,7 @@ import {
   type EpisodeStatus,
 } from "@/lib/data";
 import { DEMO_SERIES } from "@/lib/demo-fixtures";
-import { listSeries } from "@/lib/api";
+import { listSeries, renameSeries, ApiError } from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
   return (
@@ -109,6 +109,129 @@ export function ProjectScreen({ nav, route }: { nav: Nav; route: Route }) {
   return <ProjectInner nav={nav} route={route} />;
 }
 
+// Inline-editable series title: pencil → input with Save/Cancel (Enter saves,
+// Esc cancels). Calls renameSeries and lifts the new name to the parent state.
+// In the offline demo (no real series routed in) it updates locally only.
+function SeriesTitle({
+  series,
+  isDemo,
+  onRenamed,
+}: {
+  series: Series;
+  isDemo: boolean;
+  onRenamed: (name: string) => void;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(series.name);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const begin = () => {
+    setDraft(series.name);
+    setError(null);
+    setEditing(true);
+  };
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+  };
+  const save = async () => {
+    const name = draft.trim();
+    if (!name) {
+      setError("Tên series không được để trống.");
+      return;
+    }
+    if (name.length > 120) {
+      setError("Tên series tối đa 120 ký tự.");
+      return;
+    }
+    if (name === series.name) {
+      setEditing(false);
+      return;
+    }
+    // Offline demo: no backend — update locally only.
+    if (isDemo) {
+      onRenamed(name);
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await renameSeries(series.id, name);
+      onRenamed(updated.name);
+      setEditing(false);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? e.message : e instanceof Error ? e.message : "Đổi tên thất bại";
+      setError(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <h2 style={{ fontSize: 24, margin: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {series.name}
+        </h2>
+        <button
+          className="btn btn-ghost btn-sm"
+          title="Đổi tên series"
+          aria-label="Đổi tên series"
+          onClick={begin}
+          style={{ flex: "none", padding: "4px 8px" }}
+        >
+          <Icon name="pencil" size={15} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          ref={inputRef}
+          className="input"
+          value={draft}
+          maxLength={120}
+          disabled={saving}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          style={{ fontSize: 20, fontWeight: 700, flex: 1, minWidth: 0 }}
+        />
+        <Button variant="primary" size="sm" icon={saving ? "loader" : "check"} disabled={saving} onClick={() => void save()}>
+          {saving ? "Đang lưu…" : "Lưu"}
+        </Button>
+        <Button variant="ghost" size="sm" icon="x" disabled={saving} onClick={cancel}>
+          Hủy
+        </Button>
+      </div>
+      {error && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 12.5, color: "var(--danger, #ef3e36)" }}>
+          <Icon name="alert-triangle" size={14} />
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
   // Start from the series handed in by the dashboard; refresh its episode list
   // (titles/statuses) from the backend on mount so the project view reflects the
@@ -157,7 +280,11 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
                 <Icon name={sk.icon} size={15} /> {sk.name}
               </span>
             </div>
-            <h2 style={{ fontSize: 24, marginBottom: 10 }}>{series.name}</h2>
+            <SeriesTitle
+              series={series}
+              isDemo={!route.series}
+              onRenamed={(name) => setSeries((prev) => ({ ...prev, name }))}
+            />
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
               {Object.keys(series.providers).map((g) => (
                 <Badge key={g} tone="neutral" icon={PROVIDERS[g].icon}>
