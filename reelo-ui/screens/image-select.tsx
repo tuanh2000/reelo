@@ -338,8 +338,8 @@ function ImageSelectInner({ nav, route, series }: { nav: Nav; route: Route; seri
           </div>
           <h2 style={{ fontSize: 22 }}>Chọn ảnh hoặc clip cho từng đoạn</h2>
           <p className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>
-            Mỗi đoạn có ảnh thật (Commons, PD/CC) và clip thật (Pexels, CC0) trộn lẫn. Mục đầu
-            được chọn sẵn — nhấp để đổi (clip có nhãn ▶), rồi bấm sản xuất.
+            Mỗi đoạn có ảnh thật (Commons / Openverse, PD/CC) và clip thật (Pexels, CC0) trộn lẫn.
+            Mục đầu được chọn sẵn — nhấp để đổi (clip có nhãn ▶), rồi bấm sản xuất.
           </p>
         </div>
         <div style={{ display: "flex", gap: 10 }}>

@@ -230,6 +230,7 @@ export const PROVIDERS: Record<string, ProviderGroup> = {
       { id: "gemini", name: "Gemini (Imagen)", cost_tier: "free", requires_key: true, key_help_url: "https://aistudio.google.com/apikey", note: "Imagen" },
       { id: "web", name: "Web · Ảnh thật + Video clip", cost_tier: "free", requires_key: false, note: "Trộn ảnh Commons + clip Pexels (nếu có key)" },
       { id: "web-commons", name: "Web · Ảnh thật (Commons)", cost_tier: "free", requires_key: false, note: "Ảnh thật PD/CC, không cần key" },
+      { id: "web-openverse", name: "Web · Ảnh thật (Openverse)", cost_tier: "free", requires_key: false, note: "~800M ảnh CC/PD, không cần key" },
       { id: "web-pexels", name: "Web · Video clip (Pexels)", cost_tier: "free", requires_key: true, key_help_url: "https://www.pexels.com/api/", note: "Clip thật CC0, cần key Pexels" },
       { id: "sd", name: "Stable Diffusion", cost_tier: "paid", requires_key: true, key_help_url: "https://platform.stability.ai/account/keys", note: "Self-host" },
     ],

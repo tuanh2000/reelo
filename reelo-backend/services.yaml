@@ -217,6 +217,28 @@ services:
     pricing:
       generate-image: { per_image: 0.0 }
 
+  web-openverse:
+    display_name: "Web · Ảnh thật (Openverse)"
+    client: "clients.openverse_image.OpenverseImageClient"
+    cost_tier: free                       # keyless: no API key to generate
+    auth: { type: none }                  # web-* photo providers are keyless
+    key_help_url: null
+    # Tunables read by OpenverseImageClient (page size / robustness).
+    timeout: 30
+    retries: 2
+    tasks:
+      generate-image:
+        # Real photos: any aspect; the renderer pillarboxes/Ken-Burns to frame.
+        sizes: ["16:9", "9:16", "1:1", "4:3", "3:4"]
+        default_size: "16:9"
+        # Default Openverse page_size for the curation grid (~9 candidates).
+        search_limit: 9
+        # Only commercially-reusable CC/PD images are returned (license_type=
+        # commercial → CC0/PDM/CC-BY/CC-BY-SA; NC/ND excluded). Enforced client+API.
+        license_filter: ["cc0", "pdm", "by", "by-sa"]
+    pricing:
+      generate-image: { per_image: 0.0 }
+
   web-pexels:
     display_name: "Web · Video clip (Pexels)"
     client: "clients.pexels_video.PexelsVideoClient"
@@ -299,7 +321,8 @@ routing:
     # explicit Setup choice rather than an auto-fallback.
     write-script: ["claude", "chatgpt", "gemini", "deepseek"]
     generate-voice: ["eleven", "edge", "hf"]
-    # web-commons is keyless, so it's always usable as a fallback; placed after
-    # the generative providers since the user picks it explicitly in Setup.
-    # web-pexels (video clips) is BYOK; only usable when the user has a Pexels key.
-    generate-image: ["kie", "gemini", "chatgpt", "web-commons", "web-pexels", "sd"]
+    # web-commons / web-openverse are keyless, so they're always usable as a
+    # fallback; placed after the generative providers since the user picks them
+    # explicitly in Setup. web-pexels (video clips) is BYOK; only usable when the
+    # user has a Pexels key.
+    generate-image: ["kie", "gemini", "chatgpt", "web-commons", "web-openverse", "web-pexels", "sd"]
