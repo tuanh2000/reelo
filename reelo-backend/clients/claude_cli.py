@@ -11,27 +11,37 @@ Family: subscription-CLI. We do NOT reuse :func:`run_skill_script` (that parses 
 skill-specific JSON shape and runs ``python``); instead we ``asyncio``-exec the
 ``claude`` binary directly and parse its native ``--output-format json`` result.
 
-Verified against ``claude`` CLI 2.1.x (BƯỚC 0 — reproduced on a real binary in a
-fresh ``CLAUDE_CONFIG_DIR`` mimicking a clean worker container):
+Verified against ``claude`` CLI 2.1.170 (BƯỚC 0 — bisected on a real binary in a
+fresh ``CLAUDE_CONFIG_DIR`` mimicking a clean worker container). The invocation is
+kept to the **minimal known-good set**: every extra flag/seed/env was added back
+one at a time and confirmed to add nothing (and some — ``--max-turns 1`` — to be
+actively harmful), so they are NOT used.
 - **stdin MUST be closed** (``stdin=DEVNULL``). In ``-p`` mode the CLI reads
   stdin; when stdin is an inherited/open pipe with no EOF (the default for an arq
   worker child) the CLI blocks waiting for stdin data. Newer builds self-recover
   after ~3s with a ``"no stdin data received"`` warning, but older builds block
   *forever* — this was the production hang (``proc.communicate()`` never
-  returned). Passing ``stdin=DEVNULL`` makes the run start immediately (measured
-  ~0.8s vs ~4.4s) and removes the hang entirely.
-- **No interactive onboarding/trust prompt** appears in ``-p`` mode even with an
-  empty config dir; the CLI just creates ``.claude.json`` and runs. We still
-  pre-seed a minimal ``.claude.json`` (``hasCompletedOnboarding`` +
-  ``bypassPermissionsModeAccepted``) defensively so older/other builds that *do*
-  gate on onboarding/trust never block headless.
+  returned). Passing ``stdin=DEVNULL`` makes the run start immediately and removes
+  the hang entirely. This is the ONE thing that must stay.
+- **No seed.** An empty/non-seeded ``CLAUDE_CONFIG_DIR`` runs fine in ``-p`` mode
+  (no onboarding/trust prompt; the seeded and non-seeded runs reach the auth check
+  in the same ~3.5s). The old ``.claude.json`` seed was pure superstition and is
+  removed.
+- **Minimal flags only.** ``-p <prompt> --output-format json --model <model>`` +
+  ``--tools ""`` (carries no risk and is the *correct* single-turn guard: it
+  disables Bash/Edit/etc so the model can never go agentic/multi-turn — a
+  tool-tempting prompt without it went ``num_turns:2``) + ``--system-prompt`` for
+  ``req.system``. We deliberately do NOT pass ``--max-turns 1`` (with tools off it
+  is redundant, and with tools on it turns a legitimate "use a tool then answer"
+  into a hard ``error_max_turns``), nor ``--permission-mode default`` (the
+  default), nor ``--no-session-persistence`` (the per-call temp config dir is
+  wiped after every run regardless).
 - Auth headless: env ``CLAUDE_CODE_OAUTH_TOKEN=<token>`` used as a bearer token.
-  We also pin ``CLAUDE_CONFIG_DIR`` to a per-user temp dir so one user's token
-  never reads another user's keychain/session. A bad/empty token fails *fast*
-  (``api_error_status: 401`` "Failed to authenticate" in ~4s; or
+  We also pin ``CLAUDE_CONFIG_DIR`` to a per-call temp dir so one user's token
+  never reads another user's keychain/session, and clear ``ANTHROPIC_API_KEY`` so
+  a metered host key can't shadow the subscription token. A bad/empty token fails
+  *fast* (``api_error_status: 401`` "Failed to authenticate" in ~3.5s; or
   ``"Not logged in · Please run /login"`` with no token) — never a hang.
-- Single-turn, no tools/agentic: ``--tools "" --max-turns 1 --permission-mode
-  default`` (``--system-prompt`` carries ``req.system``; no CLAUDE.md/agent).
 - ``--output-format json`` prints ONE object on stdout with:
   ``{type:"result", is_error:bool, result:"<assistant text>", modelUsage:{...},
   usage:{input_tokens, output_tokens, ...}}``. Exit code 0 on success; non-zero
@@ -206,7 +216,14 @@ def _build_argv(
     system: str | None,
     json_mode: bool,
 ) -> list[str]:
-    """The ``claude`` argv for a single-turn, no-tool headless run."""
+    """The ``claude`` argv for a single-turn, no-tool headless run.
+
+    Kept to the minimal known-good set (BƯỚC 0 bisect): ``-p``/``--output-format
+    json``/``--model`` + ``--tools ""`` (disable all built-in tools so the model
+    can't go agentic/multi-turn) + ``--system-prompt``. No ``--max-turns`` /
+    ``--permission-mode`` / ``--no-session-persistence`` — they add nothing here
+    and ``--max-turns 1`` actively breaks legit tool-then-answer flows.
+    """
     argv = [
         binary,
         "-p",
@@ -215,15 +232,10 @@ def _build_argv(
         "json",
         "--model",
         model,
-        # No agentic loop / tools: one assistant turn, no Bash/Edit/etc.
+        # Disable all built-in tools: keeps the run a single, deterministic
+        # assistant turn (no Bash/Edit/Read agentic loop). Proven non-hang.
         "--tools",
         "",
-        "--max-turns",
-        "1",
-        "--permission-mode",
-        "default",
-        # Stable prompt cache + no session files written to disk.
-        "--no-session-persistence",
     ]
     if system:
         argv += ["--system-prompt", system]
@@ -260,8 +272,10 @@ async def _run_claude(
         prompt=prompt, model=model, binary=binary, system=system, json_mode=json_mode
     )
 
+    # Per-call temp config dir, NOT seeded: an empty dir runs fine headless (BƯỚC
+    # 0). It isolates the user's token from any shared keychain/session and is
+    # wiped in the ``finally`` below.
     config_dir = tempfile.mkdtemp(prefix="reelo-claude-")
-    _seed_config_dir(config_dir)
     env = {
         **os.environ,
         _TOKEN_ENV: token,
@@ -269,12 +283,6 @@ async def _run_claude(
         # Defensive: make sure a metered API key in the host env can't shadow the
         # subscription OAuth token we want the CLI to use.
         "ANTHROPIC_API_KEY": "",
-        # Belt-and-suspenders against interactive gates in headless containers:
-        # no telemetry/auto-update prompts, and explicitly headless/non-tty.
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_AUTOUPDATER": "1",
-        "DISABLE_TELEMETRY": "1",
-        "CI": "1",
     }
 
     try:
@@ -333,30 +341,6 @@ async def _run_claude(
             f"claude CLI produced unexpected output: {out.strip()[:300]}"
         )
     return data
-
-
-def _seed_config_dir(config_dir: str) -> None:
-    """Pre-seed a minimal ``.claude.json`` marking onboarding/trust as done.
-
-    In CLI 2.1.x ``-p`` mode does not prompt for onboarding/trust even on an empty
-    config dir (verified in BƯỚC 0), but older/other builds may gate the first run
-    on these flags and block headless. Seeding them is cheap, harmless, and makes
-    the headless run robust across CLI versions. Best-effort: failures are ignored
-    (the CLI will create the file itself).
-    """
-    try:
-        path = os.path.join(config_dir, ".claude.json")
-        config = {
-            "hasCompletedOnboarding": True,
-            "bypassPermissionsModeAccepted": True,
-            "hasTrustDialogAccepted": True,
-            "autoUpdates": False,
-            "theme": "dark",
-        }
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(config, fh)
-    except OSError:  # pragma: no cover - non-fatal; CLI seeds its own config
-        pass
 
 
 def _parse_output(out: str) -> dict[str, Any] | None:

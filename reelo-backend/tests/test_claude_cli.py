@@ -158,11 +158,15 @@ async def test_write_script_builds_argv_env_and_parses(monkeypatch):
     assert "-p" in argv
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--model") + 1] == "claude-opus-4-8"
-    # single-turn, no tools/agentic
-    assert argv[argv.index("--max-turns") + 1] == "1"
+    # single-turn guard: tools disabled so the model can't go agentic/multi-turn
     assert "--tools" in argv and argv[argv.index("--tools") + 1] == ""
     # real system prompt forwarded via --system-prompt
     assert argv[argv.index("--system-prompt") + 1] == "you are a scriptwriter"
+    # BƯỚC 0 bisect: these flags add nothing (and --max-turns 1 is harmful) so
+    # the minimal invocation must NOT include them.
+    assert "--max-turns" not in argv
+    assert "--permission-mode" not in argv
+    assert "--no-session-persistence" not in argv
 
     env = captured["env"]
     # the user's subscription token is injected (and isolated config dir set)
@@ -287,24 +291,32 @@ async def test_stdin_is_closed_devnull(monkeypatch):
     assert captured["kwargs"].get("stdin") == _asyncio.subprocess.DEVNULL
 
 
-async def test_config_dir_is_seeded_with_onboarding(monkeypatch):
-    """The isolated CLAUDE_CONFIG_DIR is pre-seeded so older CLI builds don't gate
-    the headless run on an onboarding/trust prompt."""
+async def test_config_dir_is_isolated_and_not_seeded(monkeypatch):
+    """The CLI runs against an isolated per-call CLAUDE_CONFIG_DIR. BƯỚC 0 proved an
+    empty/non-seeded dir runs fine headless, so we no longer write a `.claude.json`
+    seed (it reached the same auth check in the same time — pure superstition)."""
+    import tempfile as _tempfile
+
     captured = _patch_exec(monkeypatch, stdout=_OK_RESULT)
+
+    seen_dirs: list[str] = []
+    real_mkdtemp = claude_cli.tempfile.mkdtemp
+
+    def _spy_mkdtemp(*a, **k):
+        d = real_mkdtemp(*a, **k)
+        seen_dirs.append(d)
+        return d
+
+    monkeypatch.setattr(claude_cli.tempfile, "mkdtemp", _spy_mkdtemp)
     await ClaudeCliClient(_CFG).write_script(
         ScriptRequest(messages=[{"role": "user", "content": "x"}]), _ctx()
     )
-    # The config dir is cleaned up after the call, so re-create + seed to assert
-    # the seed contents (the production path seeds the real temp dir before exec).
-    import tempfile as _tempfile
-
-    d = _tempfile.mkdtemp()
-    claude_cli._seed_config_dir(d)
-    seeded = json.loads(Path(d, ".claude.json").read_text())
-    assert seeded["hasCompletedOnboarding"] is True
-    assert seeded["bypassPermissionsModeAccepted"] is True
-    # and the env still points the CLI at an isolated config dir
+    # the env points the CLI at an isolated temp config dir
     assert captured["env"]["CLAUDE_CONFIG_DIR"].startswith(_tempfile.gettempdir())
+    # no seed function exists anymore, and nothing was written into the temp dir
+    assert not hasattr(claude_cli, "_seed_config_dir")
+    # the dir is removed after the call, so we can only assert it was the one used
+    assert seen_dirs and captured["env"]["CLAUDE_CONFIG_DIR"] == seen_dirs[0]
 
 
 async def test_timeout_kills_process_and_raises_unavailable(monkeypatch):
