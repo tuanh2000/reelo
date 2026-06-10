@@ -99,6 +99,38 @@ class UserSettingsRepo:
         merged.update({k: v for k, v in current.items() if k in merged})
         return merged
 
+    async def get_voice_sample(self, user_id: str) -> dict[str, Any] | None:
+        """Return the account-level voice-clone sample blob, or ``None``.
+
+        Shape (when present): ``{"audio_key", "transcript", "language"}`` — the
+        object-storage key of the normalized (wav 24 kHz mono) reference clip,
+        the exact text spoken in it, and its language code. Used by OmniVoice
+        clone mode and snapshotted into a series at approve time.
+        """
+        row = await self.get(user_id)
+        if row is None:
+            return None
+        sample = (row.settings or {}).get("voice_sample")
+        return dict(sample) if isinstance(sample, dict) else None
+
+    async def set_voice_sample(
+        self, user_id: str, sample: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Upsert the account-level voice-clone sample; returns the stored blob.
+
+        ``sample`` is ``{"audio_key", "transcript", "language"}``. Stored in the
+        JSONB ``settings`` blob alongside ``providers`` (no migration needed).
+        """
+        row = await self.get(user_id)
+        if row is None:
+            row = UserSettings(user_id=user_id, settings={"providers": {}})
+            self.s.add(row)
+        settings = dict(row.settings or {})
+        settings["voice_sample"] = dict(sample)
+        row.settings = settings
+        await self.s.flush()
+        return dict(sample)
+
 
 class SeriesRepo:
     def __init__(self, session: AsyncSession) -> None:

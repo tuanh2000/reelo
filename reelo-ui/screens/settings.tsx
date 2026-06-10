@@ -18,6 +18,7 @@ import {
   getProviderSettings,
   saveProviderSettings,
   saveApiKey,
+  uploadVoiceSampleSettings,
   ApiError,
   type ProviderSettings,
   type ProviderSettingsItem,
@@ -25,6 +26,12 @@ import {
 } from "@/lib/api";
 
 type TaskKey = "script" | "image" | "voice";
+
+// Mirrors the Setup screen's language choices (voice-sample language).
+const LANGUAGE_OPTIONS = [
+  { id: "vi", label: "Tiếng Việt" },
+  { id: "en", label: "English" },
+];
 
 const GROUPS: { key: TaskKey; label: string; icon: string; hint: string }[] = [
   {
@@ -52,6 +59,12 @@ function isOauthToken(id: string | null): boolean {
   return id === "claude-cli";
 }
 
+// Voice provider that clones from an uploaded reference sample (OmniVoice). Used
+// to prompt the user to save the choice before the server flags requires_sample.
+function isCloneProvider(id: string | null): boolean {
+  return id === "omnivoice";
+}
+
 function ReadyBadge({ item }: { item: ProviderSettingsItem }) {
   if (!item.provider) {
     return (
@@ -74,16 +87,154 @@ function ReadyBadge({ item }: { item: ProviderSettingsItem }) {
   );
 }
 
+/**
+ * Voice-clone reference upload (OmniVoice). Shown inside the Voice group card
+ * only when the chosen voice provider requires a sample. Uploads audio +
+ * transcript + language to POST /settings/voice-sample, then refreshes the
+ * settings so readiness (voice_ready / has_sample) reflects the new sample.
+ */
+function VoiceSampleBlock({
+  item,
+  onUploaded,
+}: {
+  item: ProviderSettingsItem; // the saved voice item (server truth)
+  onUploaded: () => void;
+}) {
+  const [file, setFile] = React.useState<File | null>(null);
+  const [transcript, setTranscript] = React.useState("");
+  const [language, setLanguage] = React.useState(LANGUAGE_OPTIONS[0].id);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onUpload = async () => {
+    if (!file || !transcript.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await uploadVoiceSampleSettings(file, transcript.trim(), language);
+      setFile(null);
+      setTranscript("");
+      onUploaded();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Tải giọng mẫu thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 12,
+        padding: 14,
+        borderRadius: 12,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 650, fontSize: 13.5 }}>Giọng mẫu để clone</span>
+        {item.has_sample ? (
+          <Badge tone="green" icon="check-circle-2">
+            Đã lưu giọng mẫu
+          </Badge>
+        ) : (
+          <Badge tone="amber" icon="alert-triangle">
+            Cần upload giọng mẫu
+          </Badge>
+        )}
+      </div>
+      {!item.has_sample && (
+        <div
+          className="subtle"
+          style={{ fontSize: 12, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.5 }}
+        >
+          <Icon name="alert-triangle" size={13} /> Chưa upload giọng mẫu — sẽ không clone được giọng
+          khi dựng video.
+        </div>
+      )}
+
+      <div>
+        <span className="label">Âm thanh mẫu</span>
+        <input
+          className="field"
+          type="file"
+          accept="audio/*"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setError(null);
+          }}
+          style={{ fontSize: 13 }}
+        />
+        <div className="subtle" style={{ fontSize: 11.5, marginTop: 5, lineHeight: 1.5 }}>
+          3–30 giây, đọc rõ; transcript phải khớp audio.
+        </div>
+      </div>
+
+      <div>
+        <span className="label">Transcript (nội dung đúng của đoạn mẫu)</span>
+        <textarea
+          className="field"
+          rows={3}
+          value={transcript}
+          placeholder="Nhập đúng những gì được nói trong đoạn âm thanh mẫu…"
+          onChange={(e) => setTranscript(e.target.value)}
+          style={{ fontSize: 13, resize: "vertical" }}
+        />
+      </div>
+
+      <div>
+        <span className="label">Ngôn ngữ</span>
+        <select
+          className="field"
+          value={language}
+          onChange={(e) => setLanguage(e.target.value)}
+        >
+          {LANGUAGE_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {error && (
+        <div
+          className="subtle"
+          style={{ fontSize: 12.5, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6 }}
+        >
+          <Icon name="alert-triangle" size={13} /> {error}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <Button
+          variant="primary"
+          size="md"
+          icon={saving ? "loader" : "upload"}
+          disabled={!file || !transcript.trim() || saving}
+          onClick={onUpload}
+        >
+          {saving ? "Đang tải…" : "Lưu giọng mẫu"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function ProviderGroupCard({
   group,
   options,
   item,
   onSaved,
+  onReload,
 }: {
   group: { key: TaskKey; label: string; icon: string; hint: string };
   options: ProviderOption[];
   item: ProviderSettingsItem;
   onSaved: (next: ProviderSettings) => void;
+  onReload: () => void;
 }) {
   const [provider, setProvider] = React.useState<string>(item.provider || "");
   const [keyValue, setKeyValue] = React.useState("");
@@ -240,6 +391,21 @@ function ProviderGroupCard({
             {saving ? "Đang lưu…" : "Lưu"}
           </Button>
         </div>
+
+        {/* Voice-clone (OmniVoice) reference upload — only for the voice task,
+            once a sample-requiring provider is saved. */}
+        {group.key === "voice" && item.requires_sample && (
+          <VoiceSampleBlock item={item} onUploaded={onReload} />
+        )}
+        {/* Prompt to save the choice first when OmniVoice is picked but not yet
+            persisted (server flags requires_sample only on the saved provider). */}
+        {group.key === "voice" &&
+          !item.requires_sample &&
+          isCloneProvider(provider) && (
+            <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="info" size={13} /> Nhấn “Lưu” để chọn OmniVoice, sau đó tải lên giọng mẫu.
+            </div>
+          )}
       </div>
     </Card>
   );
@@ -336,6 +502,7 @@ export function SettingsScreen({ nav }: { nav: Nav }) {
               options={data.options[g.key]}
               item={data[g.key]}
               onSaved={setData}
+              onReload={load}
             />
           ))}
           <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 7 }}>

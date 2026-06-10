@@ -311,12 +311,20 @@ class ProviderSettingsItem(BaseModel):
     ``provider`` is the chosen provider id (``None`` when the user has not picked
     one yet). ``requires_key`` / ``has_key`` mirror the key state for that
     provider; ``ready`` is the gate the UI uses = a provider is chosen AND
-    (it needs no key OR a key is present).
+    (it needs no key OR a key is present) AND (it needs no voice sample OR one is
+    present).
+
+    ``requires_sample`` / ``has_sample`` are voice-only: the OmniVoice clone
+    provider requires an uploaded reference sample (account-level, see
+    ``POST /settings/voice-sample``). They stay ``False`` for non-voice tasks and
+    for voice providers that do not clone (edge / eleven).
     """
 
     provider: str | None = None
     requires_key: bool = False
     has_key: bool = False
+    requires_sample: bool = False
+    has_sample: bool = False
     ready: bool = False
 
 
@@ -334,6 +342,20 @@ class ProviderSettingsResponse(BaseModel):
     image_ready: bool = False
     voice_ready: bool = False
     options: ProvidersResponse
+
+
+class VoiceSampleStatusResponse(BaseModel):
+    """``GET /settings/voice-sample`` / ``POST /settings/voice-sample`` result.
+
+    Reports whether the account has an OmniVoice voice-clone reference uploaded,
+    plus its ``transcript`` / ``language`` for display. NEVER returns the audio
+    bytes; ``duration_s`` is set on a fresh upload (the normalized clip length).
+    """
+
+    has_sample: bool = False
+    transcript: str | None = None
+    language: str | None = None
+    duration_s: float | None = None
 
 
 class SaveProviderSettingsRequest(BaseModel):

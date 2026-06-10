@@ -490,6 +490,12 @@ export interface ProviderSettingsItem {
   provider: string | null;
   requires_key: boolean;
   has_key: boolean;
+  // Voice-only (OmniVoice clone): the chosen voice provider needs an uploaded
+  // reference sample. False for non-voice tasks and non-clone voice providers.
+  requires_sample: boolean;
+  has_sample: boolean;
+  // ready = chosen AND (no key needed OR key present) AND (no sample needed OR
+  // sample present).
   ready: boolean;
 }
 export interface ProviderSettings {
@@ -513,6 +519,51 @@ export async function saveProviderSettings(
     method: "PUT",
     json: choices,
   });
+}
+
+/** Account-level voice-clone reference sample (OmniVoice). */
+export interface VoiceSampleStatus {
+  has_sample: boolean;
+  transcript?: string | null;
+  language?: string | null;
+  // Set only on a fresh upload (the normalized clip length); null on re-read.
+  duration_s?: number | null;
+}
+/** Presence + transcript/language of the account voice sample (never audio). */
+export async function getVoiceSampleStatus(): Promise<VoiceSampleStatus> {
+  return request<VoiceSampleStatus>("/settings/voice-sample");
+}
+/**
+ * Upload the account-level OmniVoice voice-clone reference. The backend
+ * normalizes to wav 24 kHz mono, validates 3–30 s, stores it once per account,
+ * and records the transcript + language. Returns presence + transcript/language
+ * (never the audio bytes). Snapshotted into each series at approve time.
+ */
+export async function uploadVoiceSampleSettings(
+  audio: File,
+  transcript: string,
+  language: string,
+): Promise<VoiceSampleStatus> {
+  const form = new FormData();
+  form.append("audio", audio);
+  form.append("transcript", transcript);
+  form.append("language", language);
+  const res = await fetch(`${API_BASE}/settings/voice-sample`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (body && body.detail) detail = String(body.detail);
+    } catch {
+      /* non-JSON */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as VoiceSampleStatus;
 }
 
 /** BYOK key storage ------------------------------------------------------- */

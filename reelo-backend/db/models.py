@@ -64,9 +64,15 @@ class UserSettings(Base, TimestampMixin):
     account-level preferences can be added without further migrations; the
     canonical shape today is::
 
-        {"providers": {"script": <id|null>, "image": <id|null>, "voice": <id>}}
+        {"providers": {"script": <id|null>, "image": <id|null>, "voice": <id>},
+         "voice_sample": {"audio_key": <key>, "transcript": <str>,
+                          "language": <code|null>}}
 
-    Defaults when a user has never configured anything: ``script=None``,
+    ``voice_sample`` is the account-level OmniVoice voice-clone reference
+    (optional; present only after the user uploads one in Settings). It is
+    snapshotted into a series' ``voice`` config at approve time when the chosen
+    voice provider is OmniVoice. Defaults when a user has never configured
+    anything: ``script=None``,
     ``image=None``, ``voice="edge"`` (free, keyless) — see
     :func:`db.repository.UserSettingsRepo.default_providers`.
     """

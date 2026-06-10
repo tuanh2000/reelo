@@ -18,7 +18,7 @@ Bối cảnh: **Reelo là multi-tenant SaaS** (Google OAuth, Postgres, Redis + A
 | M3-6 | **Theo dõi usage + pricing** | `pricing` trong services.yaml + bảng `usage_log` per-user → cost estimate (Module 2) |
 | M3-7 | **Worker queue: Arq (Redis)** | Client được gọi từ **Arq task** (worker), không chạy trong web process |
 | M3-8 | **Không quota per-user ở v1** | Worker pool tự giới hạn; fair-scheduling để sau |
-| M3-9 | **OmniVoice = voice clone NATIVE, Reelo-hosted GPU** | Ngoại lệ BYOK: model GPU (k2-fsa) chạy ở **microservice riêng** (`services/omnivoice/`), keyless với user, gọi qua `OMNIVOICE_URL`. Provider `omnivoice`, `cost_tier: paid` (compute Reelo trả), cần **voice sample** (upload). KHÔNG vào `routing.fallback` — chọn explicit. |
+| M3-9 | **OmniVoice = voice clone NATIVE, Reelo-hosted GPU** | Ngoại lệ BYOK: model GPU (k2-fsa) chạy ở **microservice riêng** (`services/omnivoice/`), keyless với user, gọi qua `OMNIVOICE_URL`. Provider `omnivoice`, `cost_tier: paid` (compute Reelo trả), cần **voice sample** (upload **account-level** ở Settings: `POST /settings/voice-sample` → `user_settings.voice_sample`; snapshot vào series khi approve). `GET /settings/providers` báo `voice.requires_sample`/`has_sample`/`voice_ready`. KHÔNG vào `routing.fallback` — chọn explicit. |
 
 > **Hệ quả lớn cho Module 1:** mọi provider script giờ là **API chính thức** → đều hỗ trợ **JSON mode + system prompt thật**. Cơ chế "sentinel + parse fragile" của gemini-web2api **không còn là đường chính** — dùng structured output native, sentinel chỉ là fallback ([Module 1](module-1-ai-chatting.md)).
 

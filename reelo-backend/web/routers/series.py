@@ -6,9 +6,6 @@ in ``series.spec_json`` with episode rows mirrored for lookup/status.
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from db.repository import SeriesRepo
@@ -16,6 +13,11 @@ from models.spec import VoiceSample
 from module1.persistence import save_series_spec, spec_from_row
 from module2 import ffmpeg
 from storage import episode_key, get_storage
+from web._voice_sample import (
+    VOICE_SAMPLE_MAX_S,
+    VOICE_SAMPLE_MIN_S,
+    normalize_voice_sample,
+)
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     MusicUploadResponse,
@@ -26,11 +28,6 @@ from web.schemas import (
 )
 
 router = APIRouter(prefix="/series", tags=["series"])
-
-# Voice-clone sample bounds (seconds). OmniVoice clones best from a short, clean
-# clip; reject too-short (no voiceprint) or too-long (wasteful / off-task) uploads.
-VOICE_SAMPLE_MIN_S = 3.0
-VOICE_SAMPLE_MAX_S = 30.0
 
 
 @router.get("", response_model=SeriesListResponse)
@@ -139,7 +136,7 @@ async def upload_voice_sample(
 
     # Normalize to wav 24 kHz mono and measure duration (validate 3–30 s).
     try:
-        wav_bytes, duration = await _normalize_voice_sample(raw, audio.filename or "sample")
+        wav_bytes, duration = await normalize_voice_sample(raw, audio.filename or "sample")
     except ffmpeg.FFmpegError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -171,41 +168,6 @@ async def upload_voice_sample(
     await db.flush()
 
     return VoiceSampleResponse(audio_key=key, duration_s=round(duration, 2), voice=spec.voice)
-
-
-async def _normalize_voice_sample(raw: bytes, name: str) -> tuple[bytes, float]:
-    """Transcode an uploaded clip to wav 24 kHz mono; return (wav_bytes, duration).
-
-    Writes the upload to a temp file, runs ffmpeg (``-ar 24000 -ac 1``), probes
-    the result's duration, and returns the normalized bytes. Raises
-    :class:`ffmpeg.FFmpegError` if the source cannot be decoded.
-    """
-    tmp_dir = Path(tempfile.mkdtemp(prefix="reelo_vsample_"))
-    src = tmp_dir / ("src_" + Path(name).name)
-    out = tmp_dir / "sample.wav"
-    try:
-        src.write_bytes(raw)
-        argv = [
-            ffmpeg.ffmpeg_bin(),
-            "-y",
-            "-i",
-            str(src),
-            "-ar",
-            "24000",
-            "-ac",
-            "1",
-            str(out),
-        ]
-        await ffmpeg.run(argv, timeout=120)
-        duration = await ffmpeg.probe_duration(out)
-        return out.read_bytes(), duration
-    finally:
-        for p in (src, out):
-            p.unlink(missing_ok=True)
-        try:
-            tmp_dir.rmdir()
-        except OSError:
-            pass
 
 
 __all__ = ["router"]

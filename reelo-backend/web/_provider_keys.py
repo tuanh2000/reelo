@@ -36,6 +36,21 @@ def provider_requires_key(provider: str) -> bool:
     return auth.get("type", "key") != "none"
 
 
+def provider_requires_sample(provider: str) -> bool:
+    """Whether ``provider`` needs an uploaded voice-clone reference sample.
+
+    True for a voice provider whose ``generate-voice`` task declares
+    ``mode: clone`` (OmniVoice zero-shot cloning). Other voice providers
+    (edge / eleven preset voices) and all non-voice providers return ``False``.
+    """
+    registry = get_registry()
+    raw = registry.services_raw.get(provider)
+    if not raw:
+        return False
+    voice_block = (raw.get("tasks") or {}).get(Task.GENERATE_VOICE.value) or {}
+    return voice_block.get("mode") == "clone"
+
+
 def provider_supports_field(provider: str, field: str) -> bool:
     """Whether ``provider`` declares support for the task behind ``field``.
 
@@ -90,6 +105,7 @@ __all__ = [
     "TASK_TO_FIELD",
     "FIELD_TO_TASK",
     "provider_requires_key",
+    "provider_requires_sample",
     "provider_supports_field",
     "resolve_key_ref",
     "build_validation_context",

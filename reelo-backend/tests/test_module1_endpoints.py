@@ -224,6 +224,67 @@ def test_wizard_approve_snapshots_account_providers(m1_client, monkeypatch):
     assert providers == {"script": "claude", "image": "kie", "voice": "eleven"}
 
 
+def test_wizard_approve_snapshots_omnivoice_clone_sample(m1_client, monkeypatch):
+    """OmniVoice voice provider → series.voice is clone mode with the account sample."""
+    import web.routers.wizard as wizard_router
+
+    async def fake_account(db, user_id):
+        return {"script": "claude", "image": "kie", "voice": "omnivoice"}
+
+    async def fake_sample(db, user_id):
+        return {"audio_key": "voice-samples/u_test/sample.wav", "transcript": "xin chào", "language": "vi"}
+
+    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
+    monkeypatch.setattr(wizard_router, "_account_voice_sample", fake_sample)
+
+    resp = m1_client.post(
+        "/wizard/approve",
+        json={
+            "name": "Faiths",
+            "topic": "religion",
+            "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
+            "config": _config_body(),  # request voice is edge/preset — must be overridden
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    voice = resp.json()["series"]["voice"]
+    assert voice["provider"] == "omnivoice"
+    assert voice["mode"] == "clone"
+    assert voice["voice_id"] == ""
+    assert voice["voice_sample"]["audio_key"] == "voice-samples/u_test/sample.wav"
+    assert voice["voice_sample"]["transcript"] == "xin chào"
+    assert voice["voice_sample"]["language"] == "vi"
+
+
+def test_wizard_approve_omnivoice_without_sample_is_clone_no_sample(m1_client, monkeypatch):
+    """OmniVoice with no uploaded sample → clone mode, voice_sample None (not blocked)."""
+    import web.routers.wizard as wizard_router
+
+    async def fake_account(db, user_id):
+        return {"script": "claude", "image": "kie", "voice": "omnivoice"}
+
+    async def no_sample(db, user_id):
+        return None
+
+    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
+    monkeypatch.setattr(wizard_router, "_account_voice_sample", no_sample)
+
+    resp = m1_client.post(
+        "/wizard/approve",
+        json={
+            "name": "Faiths",
+            "topic": "religion",
+            "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
+            "config": _config_body(),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    voice = resp.json()["series"]["voice"]
+    assert voice["provider"] == "omnivoice"
+    assert voice["mode"] == "clone"
+    assert voice["voice_sample"] is None
+
+
 def test_wizard_approve_409_in_prod_when_unconfigured(m1_client, monkeypatch):
     """Prod with no account script/image provider → 409 (UI gate)."""
     import web.routers.wizard as wizard_router
