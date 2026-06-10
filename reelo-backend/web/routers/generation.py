@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from db.repository import GenJobRepo
+from db.repository import ApiKeyRepo, GenJobRepo
 from module1.persistence import find_series_for_episode
 from module2 import jobs as jobmod
+from web._provider_keys import series_readiness
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     PollGenerationResponse,
@@ -42,6 +43,21 @@ async def start_generation(
             detail=f"episode {body.episode_id} not found",
         )
     _, spec, ep = found
+
+    # Per-series readiness gate: the chosen script/image/voice providers must have
+    # the user's per-user keys (and a voice sample for OmniVoice clone) before we
+    # spend compute. 409 with a clear message so the UI can route to the key page.
+    present = {r.key_ref for r in await ApiKeyRepo(db).list_refs(user_id)}
+    sr, ir, vr, missing = series_readiness(spec, present)
+    if not (sr and ir and vr):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Series chưa đủ điều kiện sản xuất: "
+                + " ".join(missing)
+                + " Vào trang Cấu hình AI để thêm key (hoặc tải giọng mẫu)."
+            ),
+        )
 
     estimate = jobmod.cost_estimate(spec, ep)
     parent_id = await jobmod.seed_parent(GenJobRepo(db), user_id, ep)

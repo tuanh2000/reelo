@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from db.repository import SeriesRepo
+from db.repository import ApiKeyRepo, SeriesRepo
 from models.spec import VoiceSample
 from module1.persistence import save_series_spec, spec_from_row
 from module2 import ffmpeg
 from storage import episode_key, get_storage
+from web._provider_keys import series_readiness
 from web._voice_sample import (
     VOICE_SAMPLE_MAX_S,
     VOICE_SAMPLE_MIN_S,
@@ -25,6 +26,7 @@ from web.schemas import (
     SaveSeriesRequest,
     SaveSeriesResponse,
     SeriesListResponse,
+    SeriesReadinessResponse,
     VoiceSampleResponse,
 )
 
@@ -78,6 +80,36 @@ async def rename_series(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"series {series_id} not found"
         )
     return SaveSeriesResponse(series=spec_from_row(row))
+
+
+@router.get("/{series_id}/readiness", response_model=SeriesReadinessResponse)
+async def series_readiness_status(
+    series_id: str, user_id: CurrentUser, db: DbSession
+) -> SeriesReadinessResponse:
+    """Whether a series can chat/produce yet, given its per-series toolset + keys.
+
+    Resolves readiness from the series' chosen script/image/voice providers
+    against the user's per-user keys (and the series voice sample for OmniVoice
+    clone). 404 when the series is missing / not owned. Used by the UI to gate
+    "Bắt đầu" / produce and to surface what is missing (route to the key page).
+    """
+    repo = SeriesRepo(db)
+    row = await repo.get(user_id, series_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"series {series_id} not found"
+        )
+    spec = spec_from_row(row)
+    present = {r.key_ref for r in await ApiKeyRepo(db).list_refs(user_id)}
+    script_ready, image_ready, voice_ready, missing = series_readiness(spec, present)
+    return SeriesReadinessResponse(
+        series_id=series_id,
+        script_ready=script_ready,
+        image_ready=image_ready,
+        voice_ready=voice_ready,
+        ready=script_ready and image_ready and voice_ready,
+        missing=missing,
+    )
 
 
 @router.post("/{series_id}/music", response_model=MusicUploadResponse)

@@ -37,8 +37,10 @@ class WizardMessageRequest(BaseModel):
     """Body of ``POST /wizard/message`` (maps ``sendWizardMessage(topic, history)``).
 
     ``skill`` / ``language`` / ``provider`` are optional so Phase A honours the
-    Setup screen's current selection if the user has already picked one (Module 1
-    Open Q #1). When omitted the handler keeps ``run_phase_a``'s safe defaults.
+    series toolset the user has already picked in the create flow (the script
+    provider is PER-SERIES, chosen up-front). When ``provider`` is omitted the
+    handler falls back to the first key-ready script provider for the user (and a
+    keyless dev stub when none qualifies).
     """
 
     idea: str = Field(..., description="Free-form idea / latest user turn")
@@ -46,7 +48,7 @@ class WizardMessageRequest(BaseModel):
     skill: Skill | None = Field(default=None, description="Setup skill, if chosen")
     language: str | None = Field(default=None, description="Setup language, if chosen")
     provider: str | None = Field(
-        default=None, description="Setup script provider id, if chosen"
+        default=None, description="Per-series script provider id, if chosen"
     )
 
 
@@ -60,9 +62,11 @@ class WizardMessageResponse(BaseModel):
 class SeriesConfig(BaseModel):
     """Setup-screen config carried into approve (Module 1 §6).
 
-    ``providers`` is deprecated/ignored: provider choices are account-level
-    (Settings page) and snapshotted server-side at approve. It is kept optional
-    for backward compatibility with older clients but no longer read.
+    ``providers`` is the PER-SERIES toolset the user picked in the create flow
+    ({script, image, voice}). It is set straight into ``SeriesSpec.providers`` at
+    approve (and aligns ``voice.provider``). When omitted (older clients), the
+    handler falls back to the keyless dev defaults so the flow never hard-fails;
+    the readiness gate (per-series key check) still applies before chat/produce.
     """
 
     skill: Skill
@@ -70,7 +74,7 @@ class SeriesConfig(BaseModel):
     target_minutes: float = 10
     density: Density = "standard"
     aspect: Literal["16:9", "9:16"] = "16:9"
-    providers: dict[str, str] | None = None  # deprecated; ignored (account-level)
+    providers: dict[str, str] | None = None  # per-series toolset {script,image,voice}
     voice: VoiceConfig
     image_style: ImageStyle
 
@@ -371,72 +375,59 @@ class ProvidersResponse(BaseModel):
     voice: list[ProviderOption] = Field(default_factory=list)
 
 
-class ProviderSettingsItem(BaseModel):
-    """A single task's account-level provider choice + readiness (Settings page).
+class ProviderKeyItem(BaseModel):
+    """Per-provider key status for the "Cấu hình AI" key-management page.
 
-    ``provider`` is the chosen provider id (``None`` when the user has not picked
-    one yet). ``requires_key`` / ``has_key`` mirror the key state for that
-    provider; ``ready`` is the gate the UI uses = a provider is chosen AND
-    (it needs no key OR a key is present) AND (it needs no voice sample OR one is
-    present).
-
-    ``requires_sample`` / ``has_sample`` are voice-only: the OmniVoice clone
-    provider requires an uploaded reference sample (account-level, see
-    ``POST /settings/voice-sample``). They stay ``False`` for non-voice tasks and
-    for voice providers that do not clone (edge / eleven).
+    Provider choices are PER-SERIES now (picked in the create/Setup flow); this
+    page only manages the user's BYOK keys, which stay PER-USER (entered once per
+    provider, reused across every series). ``requires_key`` mirrors the provider's
+    ``auth.type``; ``has_key`` / ``valid`` reflect the stored key (encrypted, per
+    user). ``key_ref`` is the storage key under which the key lives.
     """
 
-    provider: str | None = None
+    id: str
+    name: str
+    task: Literal["script", "image", "voice"]
+    cost_tier: Literal["free", "paid"]
     requires_key: bool = False
     has_key: bool = False
-    requires_sample: bool = False
-    has_sample: bool = False
-    ready: bool = False
+    valid: bool | None = None
+    key_ref: str | None = None
+    key_help_url: str | None = None
+    note: str | None = None
 
 
-class ProviderSettingsResponse(BaseModel):
-    """``GET /settings/providers`` — chosen providers, readiness, and catalog.
+class ProviderKeysResponse(BaseModel):
+    """``GET /settings/providers`` — per-task provider key catalog + key status.
 
-    ``options`` is the same per-task catalog as ``GET /providers`` so the
-    Settings page can render dropdowns without a second call.
+    The "Cấu hình AI" page lists every provider grouped by task and shows, for the
+    ones that need a key, whether the user has saved one (and whether it
+    validated). It NO LONGER stores an account-level "default provider" — that
+    choice is per-series. Voice-clone samples are also per-series now (uploaded via
+    ``POST /series/{id}/voice-sample``), so this response carries no sample state.
     """
 
-    script: ProviderSettingsItem
-    image: ProviderSettingsItem
-    voice: ProviderSettingsItem
+    script: list[ProviderKeyItem] = Field(default_factory=list)
+    image: list[ProviderKeyItem] = Field(default_factory=list)
+    voice: list[ProviderKeyItem] = Field(default_factory=list)
+
+
+class SeriesReadinessResponse(BaseModel):
+    """``GET /series/{id}/readiness`` — can this series chat/produce yet?
+
+    A series is ready when its chosen script + image providers have a per-user key
+    (keyless providers count as ready) and, when the voice provider is OmniVoice
+    clone, a per-series voice sample is present. ``missing`` lists the human
+    messages for whatever blocks readiness so the UI can route the user to the key
+    page / the voice-sample upload.
+    """
+
+    series_id: str
     script_ready: bool = False
     image_ready: bool = False
     voice_ready: bool = False
-    options: ProvidersResponse
-
-
-class VoiceSampleStatusResponse(BaseModel):
-    """``GET /settings/voice-sample`` / ``POST /settings/voice-sample`` result.
-
-    Reports whether the account has an OmniVoice voice-clone reference uploaded,
-    plus its ``transcript`` / ``language`` for display. NEVER returns the audio
-    bytes; ``duration_s`` is set on a fresh upload (the normalized clip length).
-    """
-
-    has_sample: bool = False
-    transcript: str | None = None
-    language: str | None = None
-    duration_s: float | None = None
-
-
-class SaveProviderSettingsRequest(BaseModel):
-    """``PUT /settings/providers`` — partial update of the chosen providers.
-
-    Each field is optional: only the supplied tasks are updated. A provider id
-    must be valid for its task (validated server-side); ``None`` is allowed to
-    clear a choice.
-    """
-
-    script: str | None = None
-    image: str | None = None
-    voice: str | None = None
-
-    model_config = {"extra": "ignore"}
+    ready: bool = False
+    missing: list[str] = Field(default_factory=list)
 
 
 class SaveKeyRequest(BaseModel):

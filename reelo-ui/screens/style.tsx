@@ -8,6 +8,7 @@ import { type Nav, type Route } from "@/lib/data";
 import {
   inferStyle,
   approveSeries,
+  uploadVoiceSample,
   specToSeries,
   ApiError,
   type ImageStyleSpec,
@@ -125,13 +126,14 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
       description,
       aspect,
     };
-    // Providers are account-level (Settings page) and snapshotted server-side at
-    // approve; this voice config only carries mode/sample. The backend overrides
-    // `voice.provider` with the account voice provider.
+    // Per-series toolset chosen on the Setup screen (script/image/voice). The
+    // backend aligns voice.provider with providers.voice; the voice sample (if a
+    // clone provider) is uploaded right after the series is created (below).
+    const providers = draft.providers;
     const voice: VoiceConfigSpec = {
-      provider: "edge",
+      provider: providers?.voice || "edge",
       voice_id: "",
-      mode: "preset",
+      mode: providers?.voice === "omnivoice" ? "clone" : "preset",
     };
     const config: SeriesConfig = {
       skill: draft.skill || "explain",
@@ -139,6 +141,7 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
       target_minutes: draft.target_minutes || 10,
       density: draft.density || "standard",
       aspect,
+      ...(providers ? { providers } : {}),
       voice,
       image_style,
     };
@@ -146,6 +149,20 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
     try {
       const spec = await approveSeries(draft.name, draft.topic || draft.name, draft.outline, config);
       const created = specToSeries(spec);
+      // Upload the staged OmniVoice clone sample now that the series exists.
+      if (draft.voiceSample) {
+        try {
+          await uploadVoiceSample(
+            spec.series_id,
+            draft.voiceSample.file,
+            draft.voiceSample.transcript,
+            draft.voiceSample.language,
+          );
+        } catch {
+          /* best-effort: the series is created; the user can re-upload from the
+             project screen if this fails. */
+        }
+      }
       nav({ name: "project", series: created, toast: `Đã lưu series "${created.name}"` });
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Lưu series thất bại. Vui lòng thử lại.");

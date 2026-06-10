@@ -167,6 +167,15 @@ def m2_client(store, monkeypatch):
     monkeypatch.setattr(gen_router, "GenJobRepo", lambda s: _FakeGenJobRepo(store))
     monkeypatch.setattr(gen_router, "enqueue_job", fake_enqueue)
     monkeypatch.setattr(gen_router, "find_series_for_episode", fake_find(store.series))
+
+    class _FakeApiKeyRepo:
+        def __init__(self, s):
+            pass
+
+        async def list_refs(self, user_id):
+            return []  # no keys needed: the seeded specs use keyless stub providers
+
+    monkeypatch.setattr(gen_router, "ApiKeyRepo", _FakeApiKeyRepo)
     # publish router
     monkeypatch.setattr(pub_router, "EpisodeRepo", lambda s: _FakeEpisodeRepo(store))
     monkeypatch.setattr(pub_router, "get_storage", lambda: _FakeStorage(store))
@@ -230,6 +239,19 @@ def test_start_generation_unscripted_enqueues_script_too(m2_client):
 def test_start_generation_404_when_missing(m2_client):
     resp = m2_client.post("/generation/start", json={"series_id": "s1", "episode_id": "nope"})
     assert resp.status_code == 404
+
+
+def test_start_generation_409_when_series_not_ready(m2_client):
+    """A series whose image provider needs a key the user lacks → 409 (gate)."""
+    store = m2_client.store
+    ep = _scripted_ep()
+    spec = _spec(ep=ep)
+    spec.providers = {**spec.providers, "image": "kie"}  # kie needs a key
+    store.series["s1"] = spec
+
+    resp = m2_client.post("/generation/start", json={"series_id": "s1", "episode_id": "e1"})
+    assert resp.status_code == 409, resp.text
+    assert "kie" in resp.json()["detail"]
 
 
 def test_start_generation_requires_auth():

@@ -216,8 +216,9 @@ export interface SeriesConfig {
   target_minutes: number;
   density: "light" | "standard" | "dense";
   aspect: "16:9" | "9:16";
-  // Deprecated/ignored: provider choices are account-level (Settings page) and
-  // snapshotted server-side at approve. Kept optional for backward-compat.
+  // PER-SERIES toolset {script, image, voice} picked in the create flow. Written
+  // straight into SeriesSpec.providers (and voice.provider) at approve. API keys
+  // stay per-user (Cấu hình AI). Omitting it falls back to keyless defaults.
   providers?: { script: string; image: string; voice: string };
   voice: VoiceConfigSpec;
   image_style: ImageStyleSpec;
@@ -559,85 +560,52 @@ export async function getProviders(): Promise<ProvidersResponse> {
   return request<ProvidersResponse>("/providers");
 }
 
-/** Account-level provider settings (Settings page) ----------------------- */
-export interface ProviderSettingsItem {
-  provider: string | null;
+/** Per-user API key management ("Cấu hình AI") -------------------------- */
+export type TaskKey = "script" | "image" | "voice";
+/**
+ * One provider's key status for the key-management page. Provider CHOICE is
+ * per-series now; this only reflects whether the user has saved a (per-user)
+ * BYOK key for the provider and whether it validated. Keyless providers report
+ * `requires_key=false` / `has_key=true`.
+ */
+export interface ProviderKeyItem {
+  id: string;
+  name: string;
+  task: TaskKey;
+  cost_tier: "free" | "paid";
   requires_key: boolean;
   has_key: boolean;
-  // Voice-only (OmniVoice clone): the chosen voice provider needs an uploaded
-  // reference sample. False for non-voice tasks and non-clone voice providers.
-  requires_sample: boolean;
-  has_sample: boolean;
-  // ready = chosen AND (no key needed OR key present) AND (no sample needed OR
-  // sample present).
-  ready: boolean;
+  valid: boolean | null;
+  key_ref: string | null;
+  key_help_url?: string | null;
+  note?: string | null;
 }
-export interface ProviderSettings {
-  script: ProviderSettingsItem;
-  image: ProviderSettingsItem;
-  voice: ProviderSettingsItem;
+export interface ProviderKeys {
+  script: ProviderKeyItem[];
+  image: ProviderKeyItem[];
+  voice: ProviderKeyItem[];
+}
+/** Per-task provider catalog + per-user key status (Cấu hình AI page). */
+export async function getProviderKeys(): Promise<ProviderKeys> {
+  return request<ProviderKeys>("/settings/providers");
+}
+
+/** Per-series readiness (chosen toolset + per-user keys) ------------------ */
+export interface SeriesReadiness {
+  series_id: string;
   script_ready: boolean;
   image_ready: boolean;
   voice_ready: boolean;
-  options: ProvidersResponse;
-}
-/** Read the user's chosen providers + readiness + the per-task catalog. */
-export async function getProviderSettings(): Promise<ProviderSettings> {
-  return request<ProviderSettings>("/settings/providers");
-}
-/** Upsert the chosen providers (partial: omit a task to leave it unchanged). */
-export async function saveProviderSettings(
-  choices: { script?: string | null; image?: string | null; voice?: string | null },
-): Promise<ProviderSettings> {
-  return request<ProviderSettings>("/settings/providers", {
-    method: "PUT",
-    json: choices,
-  });
-}
-
-/** Account-level voice-clone reference sample (OmniVoice). */
-export interface VoiceSampleStatus {
-  has_sample: boolean;
-  transcript?: string | null;
-  language?: string | null;
-  // Set only on a fresh upload (the normalized clip length); null on re-read.
-  duration_s?: number | null;
-}
-/** Presence + transcript/language of the account voice sample (never audio). */
-export async function getVoiceSampleStatus(): Promise<VoiceSampleStatus> {
-  return request<VoiceSampleStatus>("/settings/voice-sample");
+  ready: boolean;
+  missing: string[];
 }
 /**
- * Upload the account-level OmniVoice voice-clone reference. The backend
- * normalizes to wav 24 kHz mono, validates 3–30 s, stores it once per account,
- * and records the transcript + language. Returns presence + transcript/language
- * (never the audio bytes). Snapshotted into each series at approve time.
+ * Whether a series can chat/produce yet given its per-series toolset + the
+ * user's per-user keys (and a voice sample for OmniVoice clone). `missing`
+ * carries the human messages for whatever blocks it (route to the key page).
  */
-export async function uploadVoiceSampleSettings(
-  audio: File,
-  transcript: string,
-  language: string,
-): Promise<VoiceSampleStatus> {
-  const form = new FormData();
-  form.append("audio", audio);
-  form.append("transcript", transcript);
-  form.append("language", language);
-  const res = await fetch(`${API_BASE}/settings/voice-sample`, {
-    method: "POST",
-    credentials: "include",
-    body: form,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = (await res.json()) as { detail?: unknown };
-      if (body && body.detail) detail = String(body.detail);
-    } catch {
-      /* non-JSON */
-    }
-    throw new ApiError(res.status, detail);
-  }
-  return (await res.json()) as VoiceSampleStatus;
+export async function getSeriesReadiness(seriesId: string): Promise<SeriesReadiness> {
+  return request<SeriesReadiness>(`/series/${seriesId}/readiness`);
 }
 
 /** BYOK key storage ------------------------------------------------------- */

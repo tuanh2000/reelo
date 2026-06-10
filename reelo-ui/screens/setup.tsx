@@ -5,7 +5,14 @@
 import React from "react";
 import { Icon, Badge, Button, Card } from "@/components/ui";
 import { SKILLS, type Nav, type Route, type Skill, type SkillTemplate, type SeriesDraft } from "@/lib/data";
-import { uploadMusic } from "@/lib/api";
+import {
+  uploadMusic,
+  uploadVoiceSample,
+  getProviderKeys,
+  ApiError,
+  type ProviderKeys,
+  type ProviderKeyItem,
+} from "@/lib/api";
 
 const DENSITY_OPTIONS: { id: "light" | "standard" | "dense"; label: string }[] = [
   { id: "light", label: "Thưa (ít ảnh)" },
@@ -141,6 +148,184 @@ function TemplateRow({ tpl, active, onClick }: { tpl: SkillTemplate; active: boo
   );
 }
 
+// One per-series provider dropdown + a key warning when the picked provider
+// needs a per-user key the user has not saved (links to Cấu hình AI).
+function ProviderPicker({
+  label,
+  options,
+  value,
+  onChange,
+  nav,
+}: {
+  label: string;
+  options: ProviderKeyItem[];
+  value: string;
+  onChange: (id: string) => void;
+  nav: Nav;
+}) {
+  const chosen = options.find((o) => o.id === value);
+  const needsKey = !!chosen?.requires_key && !chosen?.has_key;
+  return (
+    <div>
+      <span className="label">{label}</span>
+      <select className="field" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.length === 0 && <option value="">—</option>}
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+            {o.cost_tier === "free" ? "  · Miễn phí" : "  · Trả phí"}
+            {o.requires_key ? (o.has_key ? "  · có key" : "  · cần key") : ""}
+          </option>
+        ))}
+      </select>
+      {needsKey && (
+        <div
+          className="subtle"
+          style={{ fontSize: 12, marginTop: 6, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.5 }}
+        >
+          <Icon name="alert-triangle" size={13} /> Chưa có key cho “{chosen?.name}”.
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ padding: "2px 6px", fontSize: 12 }}
+            onClick={() => nav({ name: "settings" })}
+          >
+            Thêm key ở Cấu hình AI
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const VOICE_LANGUAGE_OPTIONS = LANGUAGE_OPTIONS;
+
+// Per-series voice-clone reference upload (OmniVoice). When a series already
+// exists it uploads immediately (POST /series/{id}/voice-sample); in the create
+// flow (no series id yet) it stages the file + transcript and reports them up so
+// the parent can upload right after approve creates the series.
+function VoiceSampleBlock({
+  seriesId,
+  language,
+  staged,
+  onStage,
+}: {
+  seriesId?: string;
+  language: string;
+  staged: { file: File; transcript: string; language: string } | null;
+  onStage: (s: { file: File; transcript: string; language: string } | null) => void;
+}) {
+  const [file, setFile] = React.useState<File | null>(staged?.file ?? null);
+  const [transcript, setTranscript] = React.useState(staged?.transcript ?? "");
+  const [lang, setLang] = React.useState(staged?.language || language);
+  const [saving, setSaving] = React.useState(false);
+  const [done, setDone] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onApply = async () => {
+    if (!file || !transcript.trim()) return;
+    if (!seriesId) {
+      // Create flow: stage for upload right after approve.
+      onStage({ file, transcript: transcript.trim(), language: lang });
+      setDone(true);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await uploadVoiceSample(seriesId, file, transcript.trim(), lang);
+      setDone(true);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Tải giọng mẫu thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 12,
+        marginTop: 14,
+        padding: 14,
+        borderRadius: 12,
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 650, fontSize: 13.5 }}>Giọng mẫu để clone (OmniVoice)</span>
+        {done ? (
+          <Badge tone="green" icon="check-circle-2">
+            {seriesId ? "Đã lưu giọng mẫu" : "Sẽ tải lên sau khi tạo series"}
+          </Badge>
+        ) : (
+          <Badge tone="amber" icon="alert-triangle">
+            Cần giọng mẫu
+          </Badge>
+        )}
+      </div>
+      <div>
+        <span className="label">Âm thanh mẫu</span>
+        <input
+          className="field"
+          type="file"
+          accept="audio/*"
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setDone(false);
+            setError(null);
+          }}
+          style={{ fontSize: 13 }}
+        />
+        <div className="subtle" style={{ fontSize: 11.5, marginTop: 5, lineHeight: 1.5 }}>
+          3–30 giây, đọc rõ; transcript phải khớp audio.
+        </div>
+      </div>
+      <div>
+        <span className="label">Transcript (nội dung đúng của đoạn mẫu)</span>
+        <textarea
+          className="field"
+          rows={3}
+          value={transcript}
+          placeholder="Nhập đúng những gì được nói trong đoạn âm thanh mẫu…"
+          onChange={(e) => {
+            setTranscript(e.target.value);
+            setDone(false);
+          }}
+          style={{ fontSize: 13, resize: "vertical" }}
+        />
+      </div>
+      <div>
+        <span className="label">Ngôn ngữ</span>
+        <select className="field" value={lang} onChange={(e) => setLang(e.target.value)}>
+          {VOICE_LANGUAGE_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {error && (
+        <div className="subtle" style={{ fontSize: 12.5, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="alert-triangle" size={13} /> {error}
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <Button
+          variant="primary"
+          size="md"
+          icon={saving ? "loader" : "upload"}
+          disabled={!file || !transcript.trim() || saving}
+          onClick={onApply}
+        >
+          {saving ? "Đang tải…" : seriesId ? "Lưu giọng mẫu" : "Dùng giọng mẫu này"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   // Two modes: configuring a brand-new series (route.draft, from the wizard) or
   // re-editing an existing one (route.series). In create mode there is no series
@@ -169,6 +354,47 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   const [aspect, setAspect] = React.useState<"16:9" | "9:16">(draft?.aspect || "16:9");
   const [musicName, setMusicName] = React.useState<string>("");
 
+  // PER-SERIES toolset: script / image / voice provider for THIS series. Seeded
+  // from the draft (wizard pre-picked the script provider) or the existing
+  // series' providers when re-editing. The provider catalog + key status come
+  // from GET /settings/providers (api keys stay per-user).
+  const seriesProviders = series?.providers;
+  const [catalog, setCatalog] = React.useState<ProviderKeys | null>(null);
+  const [scriptProvider, setScriptProvider] = React.useState(
+    draft?.providers?.script || seriesProviders?.script || "",
+  );
+  const [imageProvider, setImageProvider] = React.useState(
+    draft?.providers?.image || seriesProviders?.image || "",
+  );
+  const [voiceProvider, setVoiceProvider] = React.useState(
+    draft?.providers?.voice || seriesProviders?.voice || "",
+  );
+
+  // Staged voice-clone sample for the create flow (uploaded after approve makes
+  // the series). Reported up to Style via the draft so it can upload post-approve.
+  const [stagedVoiceSample, setStagedVoiceSample] = React.useState<
+    { file: File; transcript: string; language: string } | null
+  >(null);
+
+  React.useEffect(() => {
+    getProviderKeys()
+      .then((k) => {
+        setCatalog(k);
+        // Default any unset task to the first usable (keyless or keyed) provider.
+        const firstUsable = (items: ProviderKeyItem[]) =>
+          items.find((p) => !p.requires_key || p.has_key)?.id || items[0]?.id || "";
+        setScriptProvider((cur) => cur || firstUsable(k.script));
+        setImageProvider((cur) => cur || firstUsable(k.image));
+        setVoiceProvider((cur) => cur || firstUsable(k.voice));
+      })
+      .catch(() => setCatalog(null)); // backend unreachable → keep manual selection
+  }, []);
+
+  const voiceNeedsSample = catalog
+    ? catalog.voice.find((v) => v.id === voiceProvider)?.note?.includes("clone") ||
+      voiceProvider === "omnivoice"
+    : voiceProvider === "omnivoice";
+
   const pickCategory = (id: string) => {
     setSkill(id);
     setTmpl(SKILLS.find((s) => s.id === id)!.templates[0].id);
@@ -190,8 +416,9 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   };
 
   // Accumulate the Setup slice into the draft handed forward to the Style screen,
-  // which runs the final approveSeries with outline + this config. Providers are
-  // NOT carried here — they are snapshotted server-side from account settings.
+  // which runs the final approveSeries with outline + this config. The per-series
+  // toolset (script / image / voice) is carried here so approve sets it on the
+  // new series; api keys remain per-user.
   const buildNextDraft = (): SeriesDraft | undefined => {
     if (!draft) return undefined;
     return {
@@ -201,6 +428,12 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
       target_minutes: targetMinutes,
       density,
       aspect,
+      providers: {
+        script: scriptProvider,
+        image: imageProvider,
+        voice: voiceProvider,
+      },
+      ...(stagedVoiceSample ? { voiceSample: stagedVoiceSample } : {}),
     };
   };
 
@@ -348,36 +581,54 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
         </div>
       </Card>
 
-      {/* Provider + key selection is account-level now (Cấu hình AI). Point the
-          user there instead of choosing providers per series. */}
-      <Card style={{ padding: 16, marginBottom: 34, background: "var(--brand-tint)", border: "1px solid color-mix(in oklab, var(--brand) 22%, transparent)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span
-            style={{
-              width: 38,
-              height: 38,
-              borderRadius: 10,
-              background: "var(--surface)",
-              color: "var(--brand)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flex: "none",
-            }}
-          >
-            <Icon name="bot" size={18} />
-          </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 14.5 }}>Nhà cung cấp AI dùng chung tài khoản</div>
-            <div className="subtle" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-              Provider cho kịch bản, ảnh và giọng đọc được cấu hình một lần trong trang Cấu hình AI và áp
-              dụng cho mọi series.
-            </div>
+      {/* Per-series AI toolset: script / image / voice provider for THIS series.
+          API keys stay per-user (Cấu hình AI); here we only pick which provider
+          this series uses. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
+        <Icon name="bot" size={18} style={{ color: "var(--brand)" }} />
+        <h3 style={{ fontSize: 16 }}>3. Bộ công cụ AI cho series này</h3>
+      </div>
+      <Card style={{ padding: 16, marginBottom: 34 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+          <div className="subtle" style={{ fontSize: 12.5, lineHeight: 1.5, flex: 1, minWidth: 0 }}>
+            Mỗi series chọn riêng provider kịch bản / ảnh / giọng. Key API nhập một lần trong Cấu hình
+            AI và dùng chung.
           </div>
-          <Button variant="secondary" size="sm" icon="arrow-right" onClick={() => nav({ name: "settings" })}>
-            Cấu hình AI
+          <Button variant="ghost" size="sm" icon="key-round" onClick={() => nav({ name: "settings" })}>
+            Quản lý key
           </Button>
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
+          <ProviderPicker
+            label="Viết kịch bản"
+            options={catalog?.script ?? []}
+            value={scriptProvider}
+            onChange={setScriptProvider}
+            nav={nav}
+          />
+          <ProviderPicker
+            label="Dựng ảnh"
+            options={catalog?.image ?? []}
+            value={imageProvider}
+            onChange={setImageProvider}
+            nav={nav}
+          />
+          <ProviderPicker
+            label="Giọng đọc"
+            options={catalog?.voice ?? []}
+            value={voiceProvider}
+            onChange={setVoiceProvider}
+            nav={nav}
+          />
+        </div>
+        {voiceNeedsSample && (
+          <VoiceSampleBlock
+            seriesId={series?.id}
+            language={language}
+            staged={stagedVoiceSample}
+            onStage={setStagedVoiceSample}
+          />
+        )}
       </Card>
 
       {/* sticky footer */}

@@ -129,6 +129,13 @@ def m1_client(store, monkeypatch):
     def fake_spec_from_row(row):
         return row.spec
 
+    class FakeApiKeyRepo:
+        def __init__(self, session):
+            pass
+
+        async def list_refs(self, user_id):
+            return [_KeyRow(r) for r in getattr(store, "key_refs", set())]
+
     async def fake_enqueue(function, *args, **kwargs):
         store.enqueued = (function, args)
         return "job-123"
@@ -147,6 +154,7 @@ def m1_client(store, monkeypatch):
     monkeypatch.setattr(series_router, "save_series_spec", fake_save)
     monkeypatch.setattr(series_router, "SeriesRepo", FakeSeriesRepo)
     monkeypatch.setattr(series_router, "spec_from_row", fake_spec_from_row)
+    monkeypatch.setattr(series_router, "ApiKeyRepo", FakeApiKeyRepo)
 
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: FAKE_USER_ID
@@ -165,6 +173,12 @@ class _Row:
     def __init__(self, spec):
         self.spec = spec
         self.id = spec.series_id if spec else None
+
+
+class _KeyRow:
+    def __init__(self, key_ref):
+        self.key_ref = key_ref
+        self.valid = True
 
 
 def _config_body():
@@ -199,6 +213,27 @@ def test_wizard_message_returns_reply(m1_client):
     assert "reply" in body
     # stub echoes the idea; no outline block → outline omitted/None
     assert body["outline"] is None
+
+
+def test_wizard_message_uses_requested_provider(m1_client, monkeypatch):
+    """The per-series script provider from the request is passed to Phase A."""
+    import web.routers.wizard as wizard_router
+
+    captured: dict[str, str] = {}
+
+    async def fake_phase_a(idea, history, *, ctx, provider="stub-script", **kw):
+        captured["provider"] = provider
+        from module1.wizard import PhaseAResult
+
+        return PhaseAResult(reply="ok", outline=None)
+
+    monkeypatch.setattr(wizard_router, "run_phase_a", fake_phase_a)
+    resp = m1_client.post(
+        "/wizard/message",
+        json={"idea": "x", "history": [], "provider": "claude"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["provider"] == "claude"
 
 
 def test_wizard_message_requires_auth():
@@ -236,18 +271,10 @@ def test_wizard_approve_persists_shell(m1_client):
     assert series["series_id"] in m1_client.store.series  # type: ignore[attr-defined]
 
 
-def test_wizard_approve_snapshots_account_providers(m1_client, monkeypatch):
-    """Providers come from account settings, NOT the request config."""
-    import web.routers.wizard as wizard_router
-
-    async def fake_account(db, user_id):
-        return {"script": "claude", "image": "kie", "voice": "eleven"}
-
-    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
-
+def test_wizard_approve_uses_per_series_providers(m1_client):
+    """Providers come from the request config (per-series toolset), set verbatim."""
     body = _config_body()
-    # Request providers are deliberately bogus; they must be ignored.
-    body["providers"] = {"script": "BOGUS", "image": "BOGUS", "voice": "BOGUS"}
+    body["providers"] = {"script": "claude", "image": "kie", "voice": "eleven"}
     resp = m1_client.post(
         "/wizard/approve",
         json={
@@ -262,26 +289,21 @@ def test_wizard_approve_snapshots_account_providers(m1_client, monkeypatch):
     assert providers == {"script": "claude", "image": "kie", "voice": "eleven"}
 
 
-def test_wizard_approve_snapshots_omnivoice_clone_sample(m1_client, monkeypatch):
-    """OmniVoice voice provider → series.voice is clone mode with the account sample."""
-    import web.routers.wizard as wizard_router
+def test_wizard_approve_omnivoice_is_clone_no_sample(m1_client):
+    """A per-series OmniVoice voice provider → series.voice is clone mode, no sample.
 
-    async def fake_account(db, user_id):
-        return {"script": "claude", "image": "kie", "voice": "omnivoice"}
-
-    async def fake_sample(db, user_id):
-        return {"audio_key": "voice-samples/u_test/sample.wav", "transcript": "xin chào", "language": "vi"}
-
-    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
-    monkeypatch.setattr(wizard_router, "_account_voice_sample", fake_sample)
-
+    The voice sample is uploaded per-series AFTER approve (POST
+    /series/{id}/voice-sample), so approve only flips the config to clone mode.
+    """
+    body = _config_body()
+    body["providers"] = {"script": "claude", "image": "kie", "voice": "omnivoice"}
     resp = m1_client.post(
         "/wizard/approve",
         json={
             "name": "Faiths",
             "topic": "religion",
             "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
-            "config": _config_body(),  # request voice is edge/preset — must be overridden
+            "config": body,  # request voice is edge/preset — overridden by chosen omnivoice
         },
     )
     assert resp.status_code == 200, resp.text
@@ -289,77 +311,44 @@ def test_wizard_approve_snapshots_omnivoice_clone_sample(m1_client, monkeypatch)
     assert voice["provider"] == "omnivoice"
     assert voice["mode"] == "clone"
     assert voice["voice_id"] == ""
-    assert voice["voice_sample"]["audio_key"] == "voice-samples/u_test/sample.wav"
-    assert voice["voice_sample"]["transcript"] == "xin chào"
-    assert voice["voice_sample"]["language"] == "vi"
-
-
-def test_wizard_approve_omnivoice_without_sample_is_clone_no_sample(m1_client, monkeypatch):
-    """OmniVoice with no uploaded sample → clone mode, voice_sample None (not blocked)."""
-    import web.routers.wizard as wizard_router
-
-    async def fake_account(db, user_id):
-        return {"script": "claude", "image": "kie", "voice": "omnivoice"}
-
-    async def no_sample(db, user_id):
-        return None
-
-    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
-    monkeypatch.setattr(wizard_router, "_account_voice_sample", no_sample)
-
-    resp = m1_client.post(
-        "/wizard/approve",
-        json={
-            "name": "Faiths",
-            "topic": "religion",
-            "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
-            "config": _config_body(),
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    voice = resp.json()["series"]["voice"]
-    assert voice["provider"] == "omnivoice"
-    assert voice["mode"] == "clone"
     assert voice["voice_sample"] is None
 
 
-def test_wizard_approve_409_in_prod_when_unconfigured(m1_client, monkeypatch):
-    """Prod with no account script/image provider → 409 (UI gate)."""
-    import web.routers.wizard as wizard_router
-    from config import get_settings
-
-    async def empty(db, user_id):
-        return {"script": None, "image": None, "voice": "edge"}
-
-    monkeypatch.setattr(wizard_router, "_account_providers", empty)
-    monkeypatch.setattr(get_settings(), "env", "prod")  # is_prod -> True
-
+def test_wizard_approve_defaults_when_providers_omitted(m1_client):
+    """Older clients that omit providers get keyless defaults (no hard-fail)."""
+    body = _config_body()
+    body.pop("providers", None)
     resp = m1_client.post(
         "/wizard/approve",
         json={
             "name": "Faiths",
             "topic": "religion",
             "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
-            "config": _config_body(),
+            "config": body,
         },
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 200, resp.text
+    providers = resp.json()["series"]["providers"]
+    assert providers == {"script": "stub-script", "image": "web", "voice": "edge"}
 
 
-def test_wizard_message_409_in_prod_when_no_script_provider(m1_client, monkeypatch):
+def test_wizard_message_falls_back_when_no_provider_requested(m1_client, monkeypatch):
+    """No per-series provider yet → falls back to a key-ready / stub script provider."""
     import web.routers.wizard as wizard_router
-    from config import get_settings
 
-    async def empty(db, user_id):
-        return {"script": None, "image": None, "voice": "edge"}
+    captured: dict[str, str] = {}
 
-    monkeypatch.setattr(wizard_router, "_account_providers", empty)
-    monkeypatch.setattr(get_settings(), "env", "prod")
+    async def fake_phase_a(idea, history, *, ctx, provider="stub-script", **kw):
+        captured["provider"] = provider
+        from module1.wizard import PhaseAResult
 
-    resp = m1_client.post(
-        "/wizard/message", json={"idea": "ancient religions", "history": []}
-    )
-    assert resp.status_code == 409
+        return PhaseAResult(reply="ok", outline=None)
+
+    monkeypatch.setattr(wizard_router, "run_phase_a", fake_phase_a)
+    resp = m1_client.post("/wizard/message", json={"idea": "x", "history": []})
+    assert resp.status_code == 200, resp.text
+    # No keys present in the fake → first keyless script provider (stub-script).
+    assert captured["provider"] == "stub-script"
 
 
 # --------------------------------------------------------------------------- #
@@ -429,6 +418,49 @@ def test_rename_series_rejects_empty(m1_client):
 def test_rename_series_rejects_too_long(m1_client):
     _seed_series(m1_client.store)  # type: ignore[attr-defined]
     assert m1_client.patch("/series/s1", json={"name": "x" * 121}).status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# GET /series/{id}/readiness  → per-series toolset + per-user key gate         #
+# --------------------------------------------------------------------------- #
+def test_series_readiness_not_ready_without_key(m1_client):
+    # Seed a series whose image provider (kie) needs a key the user lacks.
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.key_refs = set()  # type: ignore[attr-defined]
+    body = m1_client.get("/series/s1/readiness").json()
+    assert body["series_id"] == "s1"
+    # stub-script is keyless → script ready; kie needs a key → image not ready.
+    assert body["script_ready"] is True
+    assert body["image_ready"] is False
+    assert body["ready"] is False
+    assert any("kie" in m for m in body["missing"])
+
+
+def test_series_readiness_ready_with_key(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.key_refs = {"kie"}  # type: ignore[attr-defined]
+    body = m1_client.get("/series/s1/readiness").json()
+    assert body["script_ready"] is True
+    assert body["image_ready"] is True
+    assert body["voice_ready"] is True  # edge is keyless
+    assert body["ready"] is True
+    assert body["missing"] == []
+
+
+def test_series_readiness_omnivoice_needs_sample(m1_client):
+    from models.spec import VoiceConfig
+
+    spec = _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    spec.providers = {**spec.providers, "image": "web", "voice": "omnivoice"}
+    spec.voice = VoiceConfig(provider="omnivoice", voice_id="", mode="clone")
+    m1_client.store.key_refs = set()  # type: ignore[attr-defined]
+    body = m1_client.get("/series/s1/readiness").json()
+    assert body["voice_ready"] is False
+    assert any("giọng mẫu" in m for m in body["missing"])
+
+
+def test_series_readiness_404(m1_client):
+    assert m1_client.get("/series/nope/readiness").status_code == 404
 
 
 # --------------------------------------------------------------------------- #

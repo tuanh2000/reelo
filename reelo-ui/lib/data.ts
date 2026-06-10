@@ -93,7 +93,11 @@ export interface SeriesDraft {
   target_minutes?: number;
   density?: "light" | "standard" | "dense";
   aspect?: "16:9" | "9:16";
+  // PER-SERIES toolset chosen in the create flow (script/image/voice provider).
   providers?: { script: string; image: string; voice: string };
+  // Staged voice-clone sample (OmniVoice) to upload right after approve creates
+  // the series. In-memory only (rides on Route.draft, never persisted/serialized).
+  voiceSample?: { file: File; transcript: string; language: string };
 }
 
 export interface ScriptSegment {

@@ -1,37 +1,28 @@
 "use client";
 
-// ===== Settings: account-level "Cấu hình AI" =====
+// ===== Settings: per-user API key management ("Cấu hình AI") =====
 //
-// The user configures the AI providers for the three generation tasks ONCE,
-// here, before creating any series. A single provider set is shared across every
-// series (account-level decision). Series creation gates on script + image being
-// ready (see dashboard / wizard gate), routing the user here when they are not.
+// Provider SELECTION is per-series now (picked in the create/Setup flow). This
+// page only manages the user's BYOK API keys, which stay PER-USER: entered once
+// per provider, encrypted in the DB, and reused across every series.
 //
-// Each task group: choose a provider (GET /settings/providers options), enter a
-// key/token when the provider requires one (saveApiKey), and persist the choice
-// (saveProviderSettings). Readiness comes back from the server.
+// For each provider that needs a key it shows a key input + a "đã lưu / đã xác
+// thực" badge + a link to where the user gets the key. Keyless providers (Edge,
+// web-commons, OmniVoice, the web aggregate) need nothing here. Voice-clone
+// samples are uploaded per-series (project / Setup), not here.
 
 import React from "react";
 import { Icon, Badge, Button, Card, TierBadge } from "@/components/ui";
 import { type Nav } from "@/lib/data";
 import {
-  getProviderSettings,
-  saveProviderSettings,
+  getProviderKeys,
   saveApiKey,
-  uploadVoiceSampleSettings,
   ApiError,
-  type ProviderSettings,
-  type ProviderSettingsItem,
-  type ProviderOption,
+  type ProviderKeys,
+  type ProviderKeyItem,
 } from "@/lib/api";
 
 type TaskKey = "script" | "image" | "voice";
-
-// Mirrors the Setup screen's language choices (voice-sample language).
-const LANGUAGE_OPTIONS = [
-  { id: "vi", label: "Tiếng Việt" },
-  { id: "en", label: "English" },
-];
 
 const GROUPS: { key: TaskKey; label: string; icon: string; hint: string }[] = [
   {
@@ -55,68 +46,59 @@ const GROUPS: { key: TaskKey; label: string; icon: string; hint: string }[] = [
 ];
 
 // Provider id → whether its key field is an OAuth token (claude-cli) vs API key.
-function isOauthToken(id: string | null): boolean {
+function isOauthToken(id: string): boolean {
   return id === "claude-cli";
 }
 
-// Voice provider that clones from an uploaded reference sample (OmniVoice). Used
-// to prompt the user to save the choice before the server flags requires_sample.
-function isCloneProvider(id: string | null): boolean {
-  return id === "omnivoice";
-}
-
-function ReadyBadge({ item }: { item: ProviderSettingsItem }) {
-  if (!item.provider) {
+function KeyBadge({ item }: { item: ProviderKeyItem }) {
+  if (!item.requires_key) {
     return (
-      <Badge tone="amber" icon="alert-triangle">
-        Chưa chọn
+      <Badge tone="neutral" icon="unlock">
+        Không cần key
       </Badge>
     );
   }
-  if (item.ready) {
-    return (
+  if (item.has_key) {
+    return item.valid === false ? (
+      <Badge tone="amber" icon="alert-triangle">
+        Key không hợp lệ
+      </Badge>
+    ) : (
       <Badge tone="green" icon="check-circle-2">
-        {item.requires_key ? "Đã xác thực" : "Sẵn sàng"}
+        {item.valid === true ? "Đã xác thực" : "Đã lưu"}
       </Badge>
     );
   }
   return (
     <Badge tone="amber" icon="key-round">
-      Cần nhập key
+      Chưa có key
     </Badge>
   );
 }
 
-/**
- * Voice-clone reference upload (OmniVoice). Shown inside the Voice group card
- * only when the chosen voice provider requires a sample. Uploads audio +
- * transcript + language to POST /settings/voice-sample, then refreshes the
- * settings so readiness (voice_ready / has_sample) reflects the new sample.
- */
-function VoiceSampleBlock({
+/** One provider row: shows status, and (when a key is needed) a key input + Save. */
+function ProviderKeyRow({
   item,
-  onUploaded,
+  onSaved,
 }: {
-  item: ProviderSettingsItem; // the saved voice item (server truth)
-  onUploaded: () => void;
+  item: ProviderKeyItem;
+  onSaved: () => void;
 }) {
-  const [file, setFile] = React.useState<File | null>(null);
-  const [transcript, setTranscript] = React.useState("");
-  const [language, setLanguage] = React.useState(LANGUAGE_OPTIONS[0].id);
+  const [keyValue, setKeyValue] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const oauth = isOauthToken(item.id);
 
-  const onUpload = async () => {
-    if (!file || !transcript.trim()) return;
+  const onSave = async () => {
+    if (!keyValue.trim()) return;
     setSaving(true);
     setError(null);
     try {
-      await uploadVoiceSampleSettings(file, transcript.trim(), language);
-      setFile(null);
-      setTranscript("");
-      onUploaded();
+      await saveApiKey(item.id, keyValue.trim());
+      setKeyValue("");
+      onSaved();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Tải giọng mẫu thất bại.");
+      setError(e instanceof ApiError ? e.message : "Lưu key thất bại.");
     } finally {
       setSaving(false);
     }
@@ -126,7 +108,7 @@ function VoiceSampleBlock({
     <div
       style={{
         display: "grid",
-        gap: 12,
+        gap: 10,
         padding: 14,
         borderRadius: 12,
         background: "var(--surface-2)",
@@ -134,70 +116,75 @@ function VoiceSampleBlock({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontWeight: 650, fontSize: 13.5 }}>Giọng mẫu để clone</span>
-        {item.has_sample ? (
-          <Badge tone="green" icon="check-circle-2">
-            Đã lưu giọng mẫu
-          </Badge>
-        ) : (
-          <Badge tone="amber" icon="alert-triangle">
-            Cần upload giọng mẫu
-          </Badge>
-        )}
+        <span style={{ fontWeight: 650, fontSize: 14 }}>{item.name}</span>
+        <TierBadge cost_tier={item.cost_tier} requires_key={item.requires_key} />
+        <span style={{ marginLeft: "auto" }}>
+          <KeyBadge item={item} />
+        </span>
       </div>
-      {!item.has_sample && (
-        <div
-          className="subtle"
-          style={{ fontSize: 12, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.5 }}
-        >
-          <Icon name="alert-triangle" size={13} /> Chưa upload giọng mẫu — sẽ không clone được giọng
-          khi dựng video.
+
+      {item.note && (
+        <div className="subtle" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+          {item.note}
         </div>
       )}
 
-      <div>
-        <span className="label">Âm thanh mẫu</span>
-        <input
-          className="field"
-          type="file"
-          accept="audio/*"
-          onChange={(e) => {
-            setFile(e.target.files?.[0] ?? null);
-            setError(null);
-          }}
-          style={{ fontSize: 13 }}
-        />
-        <div className="subtle" style={{ fontSize: 11.5, marginTop: 5, lineHeight: 1.5 }}>
-          3–30 giây, đọc rõ; transcript phải khớp audio.
-        </div>
-      </div>
-
-      <div>
-        <span className="label">Transcript (nội dung đúng của đoạn mẫu)</span>
-        <textarea
-          className="field"
-          rows={3}
-          value={transcript}
-          placeholder="Nhập đúng những gì được nói trong đoạn âm thanh mẫu…"
-          onChange={(e) => setTranscript(e.target.value)}
-          style={{ fontSize: 13, resize: "vertical" }}
-        />
-      </div>
-
-      <div>
-        <span className="label">Ngôn ngữ</span>
-        <select
-          className="field"
-          value={language}
-          onChange={(e) => setLanguage(e.target.value)}
-        >
-          {LANGUAGE_OPTIONS.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {item.requires_key && (
+        <>
+          {item.key_help_url && (
+            <a
+              href={item.key_help_url}
+              target="_blank"
+              rel="noreferrer"
+              className="subtle"
+              style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <Icon name="external-link" size={12} />{" "}
+              {oauth ? "Hướng dẫn lấy token" : "Lấy key"}
+            </a>
+          )}
+          {oauth && (
+            <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
+              Đăng nhập tài khoản Claude của bạn rồi chạy{" "}
+              <code style={{ fontSize: 12 }}>claude setup-token</code> để tạo OAuth token và dán
+              vào đây.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              className="field mono"
+              type="password"
+              placeholder={
+                item.has_key
+                  ? "Dán key mới để thay thế…"
+                  : oauth
+                    ? "sk-ant-oat01-•••••••••••"
+                    : "sk-•••••••••••••••••••"
+              }
+              value={keyValue}
+              onChange={(e) => {
+                setKeyValue(e.target.value);
+                setError(null);
+              }}
+              style={{ fontSize: 13, flex: 1 }}
+            />
+            <Button
+              variant="primary"
+              size="md"
+              icon={saving ? "loader" : "save"}
+              disabled={saving || !keyValue.trim()}
+              onClick={onSave}
+            >
+              {saving ? "Đang lưu…" : item.has_key ? "Cập nhật" : "Lưu"}
+            </Button>
+          </div>
+          {item.has_key && (
+            <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="lock" size={13} /> Key đã lưu (mã hoá). Dán key mới để thay thế.
+            </div>
+          )}
+        </>
+      )}
 
       {error && (
         <div
@@ -207,70 +194,19 @@ function VoiceSampleBlock({
           <Icon name="alert-triangle" size={13} /> {error}
         </div>
       )}
-
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <Button
-          variant="primary"
-          size="md"
-          icon={saving ? "loader" : "upload"}
-          disabled={!file || !transcript.trim() || saving}
-          onClick={onUpload}
-        >
-          {saving ? "Đang tải…" : "Lưu giọng mẫu"}
-        </Button>
-      </div>
     </div>
   );
 }
 
 function ProviderGroupCard({
   group,
-  options,
-  item,
+  items,
   onSaved,
-  onReload,
 }: {
   group: { key: TaskKey; label: string; icon: string; hint: string };
-  options: ProviderOption[];
-  item: ProviderSettingsItem;
-  onSaved: (next: ProviderSettings) => void;
-  onReload: () => void;
+  items: ProviderKeyItem[];
+  onSaved: () => void;
 }) {
-  const [provider, setProvider] = React.useState<string>(item.provider || "");
-  const [keyValue, setKeyValue] = React.useState("");
-  const [saving, setSaving] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    setProvider(item.provider || "");
-  }, [item.provider]);
-
-  const chosen = options.find((o) => o.id === provider);
-  // The provider currently saved on the server still has its key recorded; a
-  // freshly-picked (unsaved) provider needs a key if it requires one.
-  const isCurrentSaved = provider === item.provider;
-  const needsKey = !!chosen?.requires_key && !(isCurrentSaved && item.has_key);
-  const oauth = isOauthToken(provider);
-
-  const onSave = async () => {
-    if (!provider) return;
-    setSaving(true);
-    setError(null);
-    try {
-      // Save the key first (if the user typed one) so readiness reflects it.
-      if (chosen?.requires_key && keyValue.trim()) {
-        await saveApiKey(provider, keyValue.trim());
-      }
-      const next = await saveProviderSettings({ [group.key]: provider });
-      setKeyValue("");
-      onSaved(next);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Lưu cấu hình thất bại.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <Card style={{ padding: 18 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
@@ -295,131 +231,26 @@ function ProviderGroupCard({
             {group.hint}
           </div>
         </div>
-        <ReadyBadge item={item} />
       </div>
 
-      <div style={{ display: "grid", gap: 14 }}>
-        <div>
-          <span className="label">Nhà cung cấp</span>
-          <select
-            className="field"
-            value={provider}
-            onChange={(e) => {
-              setProvider(e.target.value);
-              setError(null);
-            }}
-          >
-            <option value="">— Chọn nhà cung cấp —</option>
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-                {o.cost_tier === "free" ? "  · Miễn phí" : "  · Trả phí"}
-                {o.requires_key ? "  · cần key" : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {chosen && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <TierBadge cost_tier={chosen.cost_tier} requires_key={chosen.requires_key} />
-            {chosen.note && (
-              <span className="subtle" style={{ fontSize: 12.5 }}>
-                {chosen.note}
-              </span>
-            )}
-            {chosen.key_help_url && (
-              <a
-                href={chosen.key_help_url}
-                target="_blank"
-                rel="noreferrer"
-                className="subtle"
-                style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
-              >
-                <Icon name="external-link" size={12} />{" "}
-                {oauth ? "Hướng dẫn lấy token" : "Lấy key"}
-              </a>
-            )}
-          </div>
-        )}
-
-        {needsKey && (
-          <div>
-            <span className="label">{oauth ? "OAuth token" : "API key"}</span>
-            {oauth && (
-              <div className="subtle" style={{ fontSize: 12, marginBottom: 7, lineHeight: 1.5 }}>
-                Đăng nhập tài khoản Claude của bạn rồi chạy{" "}
-                <code style={{ fontSize: 12 }}>claude setup-token</code> để tạo OAuth token và dán
-                vào đây. Reelo gọi <code style={{ fontSize: 12 }}>claude</code> CLI bằng subscription
-                của bạn — không phải API key trả theo token.
-              </div>
-            )}
-            <input
-              className="field mono"
-              type="password"
-              placeholder={oauth ? "sk-ant-oat01-•••••••••••" : "sk-•••••••••••••••••••"}
-              value={keyValue}
-              onChange={(e) => setKeyValue(e.target.value)}
-              style={{ fontSize: 13 }}
-            />
-          </div>
-        )}
-
-        {item.provider === provider && item.requires_key && item.has_key && (
-          <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-            <Icon name="lock" size={13} /> Key đã lưu (mã hoá). Dán key mới để thay thế.
-          </div>
-        )}
-
-        {error && (
-          <div
-            className="subtle"
-            style={{ fontSize: 12.5, color: "var(--danger, #ef3e36)", display: "flex", alignItems: "center", gap: 6 }}
-          >
-            <Icon name="alert-triangle" size={13} /> {error}
-          </div>
-        )}
-
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <Button
-            variant="primary"
-            size="md"
-            icon={saving ? "loader" : "save"}
-            disabled={!provider || saving || (needsKey && !keyValue.trim())}
-            onClick={onSave}
-          >
-            {saving ? "Đang lưu…" : "Lưu"}
-          </Button>
-        </div>
-
-        {/* Voice-clone (OmniVoice) reference upload — only for the voice task,
-            once a sample-requiring provider is saved. */}
-        {group.key === "voice" && item.requires_sample && (
-          <VoiceSampleBlock item={item} onUploaded={onReload} />
-        )}
-        {/* Prompt to save the choice first when OmniVoice is picked but not yet
-            persisted (server flags requires_sample only on the saved provider). */}
-        {group.key === "voice" &&
-          !item.requires_sample &&
-          isCloneProvider(provider) && (
-            <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-              <Icon name="info" size={13} /> Nhấn “Lưu” để chọn OmniVoice, sau đó tải lên giọng mẫu.
-            </div>
-          )}
+      <div style={{ display: "grid", gap: 12 }}>
+        {items.map((item) => (
+          <ProviderKeyRow key={item.id} item={item} onSaved={onSaved} />
+        ))}
       </div>
     </Card>
   );
 }
 
 export function SettingsScreen({ nav }: { nav: Nav }) {
-  const [data, setData] = React.useState<ProviderSettings | null>(null);
+  const [data, setData] = React.useState<ProviderKeys | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   const load = React.useCallback(() => {
     setLoading(true);
     setError(null);
-    getProviderSettings()
+    getProviderKeys()
       .then(setData)
       .catch((e) => setError(e instanceof ApiError ? e.message : "Không tải được cấu hình."))
       .finally(() => setLoading(false));
@@ -429,51 +260,40 @@ export function SettingsScreen({ nav }: { nav: Nav }) {
     load();
   }, [load]);
 
-  const allReady = !!data && data.script_ready && data.image_ready;
-
   return (
     <div className="page" style={{ paddingBottom: 60 }}>
       <div style={{ marginBottom: 6 }}>
-        <Badge tone="brand" icon="settings">
-          Cấu hình tài khoản
+        <Badge tone="brand" icon="key-round">
+          Khóa API
         </Badge>
       </div>
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 22 }}>Cấu hình AI</h2>
-        <p className="muted" style={{ fontSize: 14, marginTop: 4, maxWidth: 640 }}>
-          Chọn nhà cung cấp AI cho viết kịch bản, dựng ảnh và giọng đọc — cấu hình một lần và dùng
-          chung cho mọi series. Cần cấu hình xong kịch bản và ảnh trước khi tạo series.
+        <p className="muted" style={{ fontSize: 14, marginTop: 4, maxWidth: 660 }}>
+          Nhập key API cho từng nhà cung cấp một lần — dùng chung cho mọi series. Việc chọn nhà
+          cung cấp cho từng series (kịch bản / ảnh / giọng) được thực hiện khi tạo series.
         </p>
       </div>
 
-      {!loading && data && (
-        <Card
-          style={{
-            padding: 14,
-            marginBottom: 20,
-            border: `1px solid ${allReady ? "color-mix(in oklab, #16a34a 35%, transparent)" : "color-mix(in oklab, var(--brand) 30%, transparent)"}`,
-            background: allReady ? "color-mix(in oklab, #16a34a 6%, transparent)" : "var(--brand-tint)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
-            <Icon
-              name={allReady ? "check-circle-2" : "info"}
-              size={18}
-              style={{ color: allReady ? "#16a34a" : "var(--brand)" }}
-            />
-            <span style={{ flex: 1 }}>
-              {allReady
-                ? "Đã đủ cấu hình — bạn có thể tạo series mới."
-                : "Hãy chọn provider cho Viết kịch bản và Dựng ảnh để bắt đầu tạo series."}
-            </span>
-            {allReady && (
-              <Button variant="primary" size="sm" icon="sparkles" onClick={() => nav({ name: "wizard" })}>
-                Tạo series mới
-              </Button>
-            )}
-          </div>
-        </Card>
-      )}
+      <Card
+        style={{
+          padding: 14,
+          marginBottom: 20,
+          background: "var(--brand-tint)",
+          border: "1px solid color-mix(in oklab, var(--brand) 22%, transparent)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
+          <Icon name="info" size={18} style={{ color: "var(--brand)" }} />
+          <span style={{ flex: 1 }}>
+            Bạn chọn bộ công cụ AI riêng cho từng series khi tạo. Ở đây chỉ cần lưu key cho các
+            provider cần key.
+          </span>
+          <Button variant="primary" size="sm" icon="sparkles" onClick={() => nav({ name: "wizard" })}>
+            Tạo series mới
+          </Button>
+        </div>
+      </Card>
 
       {error && (
         <Card style={{ padding: 16, marginBottom: 18, border: "1px solid color-mix(in oklab, var(--danger, #ef3e36) 40%, transparent)" }}>
@@ -496,14 +316,7 @@ export function SettingsScreen({ nav }: { nav: Nav }) {
       {!loading && data && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {GROUPS.map((g) => (
-            <ProviderGroupCard
-              key={g.key}
-              group={g}
-              options={data.options[g.key]}
-              item={data[g.key]}
-              onSaved={setData}
-              onReload={load}
-            />
+            <ProviderGroupCard key={g.key} group={g} items={data[g.key]} onSaved={load} />
           ))}
           <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 7 }}>
             <Icon name="lock" size={13} /> Mọi key được mã hoá (AES-256-GCM) và lưu theo tài khoản của bạn.

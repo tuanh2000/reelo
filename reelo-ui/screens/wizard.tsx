@@ -7,7 +7,12 @@ import { Icon, Badge, Button, Card, ChatBubble } from "@/components/ui";
 import { MiniMark } from "@/components/logo";
 import { DEMO_FALLBACK, type Nav, type OutlineItem, type SeriesDraft } from "@/lib/data";
 import { DEMO_WIZARD_OUTLINE } from "@/lib/demo-fixtures";
-import { sendWizardMessage, getProviderSettings, ApiError } from "@/lib/api";
+import {
+  sendWizardMessage,
+  getProviderKeys,
+  ApiError,
+  type ProviderKeyItem,
+} from "@/lib/api";
 
 interface Msg {
   role: "ai" | "user";
@@ -127,10 +132,11 @@ function WizardOutlineItem({
   );
 }
 
-// Gate: before creating a series the account must have a script + image
-// provider configured (account-level Settings). Three states: undefined =
-// checking, true/false = ready/not. In the offline demo we skip the gate.
-function CreateGate({ nav }: { nav: Nav }) {
+// No account-level gate anymore: the wizard chat just needs ONE usable script
+// provider (keyless, or one the user has a per-user key for). The full per-series
+// toolset (image / voice) is chosen later on the Setup screen. If the user has no
+// usable script provider at all, we point them at the key page.
+function NoScriptGate({ nav }: { nav: Nav }) {
   return (
     <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh" }}>
       <Card style={{ padding: 28, maxWidth: 460, textAlign: "center" }}>
@@ -147,12 +153,12 @@ function CreateGate({ nav }: { nav: Nav }) {
             marginBottom: 16,
           }}
         >
-          <Icon name="settings" size={26} />
+          <Icon name="key-round" size={26} />
         </span>
-        <h2 style={{ fontSize: 20, marginBottom: 10 }}>Cần cấu hình AI trước</h2>
+        <h2 style={{ fontSize: 20, marginBottom: 10 }}>Cần key cho provider kịch bản</h2>
         <p className="muted" style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>
-          Hãy chọn nhà cung cấp cho <b>Viết kịch bản</b> và <b>Dựng ảnh</b> (và giọng đọc) trong trang
-          Cấu hình AI. Cấu hình một lần và dùng chung cho mọi series.
+          Trợ lý cần ít nhất một provider viết kịch bản dùng được. Hãy thêm key cho một provider
+          (vd Gemini, Claude…) trong trang Cấu hình AI — key dùng chung cho mọi series.
         </p>
         <Button variant="primary" size="md" icon="arrow-right" onClick={() => nav({ name: "settings" })}>
           Đi tới Cấu hình AI
@@ -162,17 +168,29 @@ function CreateGate({ nav }: { nav: Nav }) {
   );
 }
 
+// A usable script provider = keyless, or one the user has a per-user key for.
+function usableScriptProviders(items: ProviderKeyItem[]): ProviderKeyItem[] {
+  return items.filter((p) => !p.requires_key || p.has_key);
+}
+
 export function WizardScreen({ nav }: { nav: Nav }) {
-  // Account-level provider readiness gate (script + image must be configured).
-  // undefined = still checking; true = ready; false = show the gate panel.
-  const [ready, setReady] = React.useState<boolean | undefined>(
-    DEMO_FALLBACK ? true : undefined,
+  // Script-provider readiness: gather the providers the user can chat with. The
+  // chosen one is passed to sendWizardMessage (per-series script provider) and
+  // carried forward into the draft so Setup pre-selects it. undefined = checking.
+  const [scriptOptions, setScriptOptions] = React.useState<ProviderKeyItem[] | undefined>(
+    DEMO_FALLBACK ? [] : undefined,
   );
+  const [scriptProvider, setScriptProvider] = React.useState<string>("");
+
   React.useEffect(() => {
     if (DEMO_FALLBACK) return;
-    getProviderSettings()
-      .then((s) => setReady(s.script_ready && s.image_ready))
-      .catch(() => setReady(true)); // backend unreachable → don't hard-block; approve still gates
+    getProviderKeys()
+      .then((k) => {
+        const usable = usableScriptProviders(k.script);
+        setScriptOptions(usable);
+        setScriptProvider((cur) => cur || usable[0]?.id || "");
+      })
+      .catch(() => setScriptOptions([])); // backend unreachable → empty (gate offers key page)
   }, []);
 
   // Demo mode (offline) keeps the canned conversation + seed outline so the UI is
@@ -201,7 +219,8 @@ export function WizardScreen({ nav }: { nav: Nav }) {
     setTyping(true);
     setError(null);
 
-    sendWizardMessage(text, history)
+    // Pass the chosen per-series script provider so Phase A uses it.
+    sendWizardMessage(text, history, scriptProvider ? { provider: scriptProvider } : {})
       .then(({ reply, outline: nextOutline }) => {
         setMsgs((m) => [...m, { role: "ai", text: reply }]);
         // Backend returns the full refined outline when it changed; keep the
@@ -223,10 +242,14 @@ export function WizardScreen({ nav }: { nav: Nav }) {
   };
 
   // Build the draft handed to the Setup screen (and ultimately approveSeries).
+  // Carry the chosen script provider so Setup pre-selects the per-series toolset.
   const buildDraft = (): SeriesDraft => ({
     name: name.trim() || "Series chưa đặt tên",
     topic: name.trim(),
     outline,
+    ...(scriptProvider
+      ? { providers: { script: scriptProvider, image: "", voice: "" } }
+      : {}),
   });
 
   const picked = outline.filter((o) => o.pick).length;
@@ -242,16 +265,16 @@ export function WizardScreen({ nav }: { nav: Nav }) {
       return n;
     });
 
-  // Gate: still checking → spinner; not configured → route to Settings.
-  if (ready === undefined) {
+  // Gate: still checking → spinner; no usable script provider → route to key page.
+  if (scriptOptions === undefined) {
     return (
       <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh" }}>
         <Icon name="loader" size={26} style={{ color: "var(--brand)" }} />
       </div>
     );
   }
-  if (ready === false) {
-    return <CreateGate nav={nav} />;
+  if (scriptOptions.length === 0 && !DEMO_FALLBACK) {
+    return <NoScriptGate nav={nav} />;
   }
 
   return (
@@ -266,17 +289,33 @@ export function WizardScreen({ nav }: { nav: Nav }) {
       <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         {/* LEFT: chat */}
         <Card style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div className="chat-ava">
               <MiniMark size={18} />
             </div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14.5 }}>Trợ lý Reelo</div>
               <div className="subtle" style={{ fontSize: 12 }}>
-                Dùng Claude · phản hồi tức thì
+                Chọn AI viết kịch bản · phản hồi tức thì
               </div>
             </div>
-            <div style={{ marginLeft: "auto" }}>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+              {scriptOptions && scriptOptions.length > 0 && (
+                <select
+                  className="field"
+                  value={scriptProvider}
+                  disabled={typing}
+                  onChange={(e) => setScriptProvider(e.target.value)}
+                  title="Provider viết kịch bản (cho series này)"
+                  style={{ fontSize: 12.5, padding: "5px 8px", maxWidth: 200 }}
+                >
+                  {scriptOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               <Badge tone="green" icon="circle-dot">
                 Online
               </Badge>

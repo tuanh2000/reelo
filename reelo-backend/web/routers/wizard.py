@@ -2,6 +2,10 @@
 
 - ``POST /wizard/message`` — Phase A refine chat → ``{reply, outline?}``.
 - ``POST /wizard/approve`` — Phase B: build + persist a SeriesSpec shell → ``{series}``.
+
+Provider selection is PER-SERIES: the user picks the script/image/voice toolset
+in the create flow and it is set straight into the new series. API keys remain
+PER-USER (entered once in "Cấu hình AI", reused across every series).
 """
 
 from __future__ import annotations
@@ -12,11 +16,14 @@ from fastapi import APIRouter, HTTPException, status
 
 from clients.base import InvalidKeyError, ProviderUnavailableError
 from config import get_settings
-from db.repository import UserSettingsRepo
-from models.spec import VoiceConfig, VoiceSample
+from db.repository import ApiKeyRepo
+from models.spec import VoiceConfig
 from module1.persistence import save_series_spec
 from module1.wizard import build_series_spec, run_phase_a
-from web._provider_keys import provider_requires_sample
+from web._provider_keys import (
+    first_ready_script_provider,
+    provider_requires_sample,
+)
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     OutlineItemModel,
@@ -31,51 +38,36 @@ log = logging.getLogger("reelo.web.wizard")
 
 router = APIRouter(prefix="/wizard", tags=["wizard"])
 
-# Dev/test fallback script provider when the account has none configured. In
-# prod a missing script provider is a hard 409 (the UI must gate creation on the
-# Settings page); in dev we fall back to the keyless stub so local flows + tests
-# run without configuration.
+# Per-series default toolset when the request omits providers (older clients).
+# Keyless picks so the create flow never hard-fails; the readiness gate (per-
+# series key check) still applies before chat/produce.
+_DEFAULT_PROVIDERS: dict[str, str] = {"script": "stub-script", "image": "web", "voice": "edge"}
+# Dev/test fallback script provider when the user has no key-ready provider.
 _DEV_FALLBACK_SCRIPT = "stub-script"
 
 
-async def _account_providers(db: DbSession, user_id: str) -> dict[str, str | None]:
-    """Read the user's account-level providers, degrading to defaults on error.
+async def _present_key_refs(db: DbSession, user_id: str) -> set[str]:
+    """The set of key_refs the user has saved, degrading to empty on error.
 
-    A DB hiccup (or a faked session in tests) must not 500 the wizard: fall back
-    to :meth:`UserSettingsRepo.default_providers` so dev/test flows keep working
-    (prod gating happens on the resolved values below).
+    Best-effort: a DB hiccup (or a faked session in tests) must not 500 the
+    wizard — an empty set just means no keyed provider qualifies, so the fallback
+    / prod gate kicks in.
     """
     try:
-        return await UserSettingsRepo(db).get_providers(user_id)
-    except Exception as exc:  # noqa: BLE001 — settings read is best-effort
-        log.warning("account providers read failed (%s); using defaults", exc)
-        return UserSettingsRepo.default_providers()
+        rows = await ApiKeyRepo(db).list_refs(user_id)
+        return {row.key_ref for row in rows}
+    except Exception as exc:  # noqa: BLE001 — key read is best-effort
+        log.warning("api-key refs read failed (%s); treating as none", exc)
+        return set()
 
 
-async def _account_voice_sample(db: DbSession, user_id: str) -> dict | None:
-    """Read the account-level voice-clone sample, degrading to None on error.
-
-    Best-effort (mirrors :func:`_account_providers`): a DB hiccup or a faked
-    session in tests must not 500 the approve flow — a missing sample just means
-    the snapshotted clone config carries no ``voice_sample`` (the Settings page
-    warns the user; produce will surface the voice error).
-    """
-    try:
-        return await UserSettingsRepo(db).get_voice_sample(user_id)
-    except Exception as exc:  # noqa: BLE001 — sample read is best-effort
-        log.warning("account voice sample read failed (%s); treating as none", exc)
-        return None
-
-
-def _build_voice_config(
-    base: VoiceConfig, provider: str, sample: dict | None
-) -> VoiceConfig:
-    """Align the request's VoiceConfig with the account voice provider (snapshot).
+def _build_voice_config(base: VoiceConfig, provider: str) -> VoiceConfig:
+    """Align the request's VoiceConfig with the chosen per-series voice provider.
 
     For a clone provider (OmniVoice) → ``mode="clone"``, ``voice_id=""``,
-    ``settings=None``, and ``voice_sample`` snapshotted from the account sample
-    (``None`` when the user has not uploaded one). For any other provider →
-    ``mode="preset"`` with the request's voice settings preserved.
+    ``settings=None``, no sample yet (uploaded per-series after approve via
+    ``POST /series/{id}/voice-sample``). For any other provider → ``mode="preset"``
+    keeping the request's voice settings.
     """
     if provider_requires_sample(provider):
         return base.model_copy(
@@ -84,7 +76,7 @@ def _build_voice_config(
                 "mode": "clone",
                 "voice_id": "",
                 "settings": None,
-                "voice_sample": VoiceSample(**sample) if sample else None,
+                "voice_sample": None,
             }
         )
     return base.model_copy(
@@ -92,22 +84,29 @@ def _build_voice_config(
     )
 
 
-async def _resolve_script_provider(db: DbSession, user_id: str) -> str:
-    """The account-level script provider, or a dev fallback / prod 409.
+async def _resolve_script_provider(
+    db: DbSession, user_id: str, requested: str | None
+) -> str:
+    """The per-series script provider to use for Phase A chat.
 
-    The provider for scriptwriting comes from the user's account settings (set
-    once in the Settings page), NOT the request. When unset: prod raises 409 so
-    the UI routes the user to configure it; dev falls back to the keyless stub.
+    Prefers the provider the user picked for the series (``requested``). When the
+    chat runs before that choice exists (start of the create flow), fall back to
+    the first key-ready script provider for the user. When nothing qualifies:
+    prod raises 409 (the UI routes the user to add a key); dev uses the keyless
+    stub so local flows + tests work without configuration.
     """
-    provider = (await _account_providers(db, user_id)).get("script")
+    if requested:
+        return requested
+    present = await _present_key_refs(db, user_id)
+    provider = first_ready_script_provider(present)
     if provider:
         return provider
     if get_settings().is_prod:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Chưa cấu hình provider viết kịch bản. Vào trang Cấu hình AI để chọn "
-                "provider script trước khi tạo series."
+                "Chưa có key cho provider viết kịch bản nào. Vào trang Cấu hình AI "
+                "để thêm key, hoặc chọn provider cho series này trước khi chat."
             ),
         )
     return _DEV_FALLBACK_SCRIPT
@@ -117,12 +116,15 @@ async def _resolve_script_provider(db: DbSession, user_id: str) -> str:
 async def wizard_message(
     body: WizardMessageRequest, user_id: CurrentUser, db: DbSession
 ) -> WizardMessageResponse:
-    """Phase A refine chat → ``{reply, outline?}`` (maps ``sendWizardMessage``)."""
-    # The script provider is account-level (Settings page), never from the body.
-    provider = await _resolve_script_provider(db, user_id)
+    """Phase A refine chat → ``{reply, outline?}`` (maps ``sendWizardMessage``).
+
+    Uses the per-series script provider the user picked (``body.provider``); when
+    absent it falls back to the user's first key-ready script provider.
+    """
+    provider = await _resolve_script_provider(db, user_id, body.provider)
     call_ctx = await build_call_context({}, user_id)
     history = [{"role": m.role, "text": m.text} for m in body.history]
-    # Honour Setup skill/language if supplied; provider comes from account settings.
+    # Honour Setup skill/language if supplied; provider is per-series.
     phase_a_kwargs: dict[str, str] = {"provider": provider}
     if body.skill is not None:
         phase_a_kwargs["skill"] = body.skill
@@ -152,42 +154,24 @@ async def wizard_approve(
 ) -> WizardApproveResponse:
     """Phase B approve → persist SeriesSpec shell (no AI, D6), return ``{series}``.
 
-    Providers are SNAPSHOTTED from the user's account settings (Settings page),
-    not from the request — the wizard config no longer carries provider choices.
-    In prod, script + image must be configured (409 otherwise); voice defaults to
-    the keyless Edge-TTS. The snapshot freezes the choice into the series so a
-    later Settings change does not retroactively alter existing series.
+    Providers are PER-SERIES: taken straight from the request config (the toolset
+    the user picked in the create flow) and written into ``SeriesSpec.providers``
+    + ``SeriesSpec.voice.provider``. When the voice provider is OmniVoice clone,
+    the series voice config is set to clone mode WITHOUT a sample — the sample is
+    uploaded per-series afterwards (``POST /series/{id}/voice-sample``). Approve
+    never blocks on missing keys/samples (the readiness gate handles that before
+    chat/produce); older clients that omit providers get keyless defaults.
     """
     cfg = body.config
-    account = await _account_providers(db, user_id)
-    script = account.get("script")
-    image = account.get("image")
-    voice = account.get("voice") or "edge"
-
-    if get_settings().is_prod and (not script or not image):
-        missing = ", ".join(t for t, v in (("script", script), ("image", image)) if not v)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Chưa cấu hình provider ({missing}). Vào trang Cấu hình AI để chọn "
-                "provider trước khi tạo series."
-            ),
-        )
-
+    chosen = dict(cfg.providers or {})
     providers = {
-        "script": script or _DEV_FALLBACK_SCRIPT,
-        "image": image or "web",
-        "voice": voice,
+        "script": chosen.get("script") or _DEFAULT_PROVIDERS["script"],
+        "image": chosen.get("image") or _DEFAULT_PROVIDERS["image"],
+        "voice": chosen.get("voice") or _DEFAULT_PROVIDERS["voice"],
     }
     # Module 2 resolves the TTS provider from ``series.voice.provider`` (not
-    # ``providers["voice"]``), so align the VoiceConfig with the account choice.
-    # When the account voice provider is OmniVoice, snapshot the account-level
-    # voice-clone sample into the series so a later Settings change does not
-    # retroactively alter existing series (mode="clone"); other providers keep
-    # the request's preset config. Missing sample → clone mode with no sample,
-    # which the renderer reports as a voice error (series creation is NOT
-    # blocked; the Settings page warns the user up-front).
-    voice_cfg = _build_voice_config(cfg.voice, voice, await _account_voice_sample(db, user_id))
+    # ``providers["voice"]``), so align the VoiceConfig with the chosen voice.
+    voice_cfg = _build_voice_config(cfg.voice, providers["voice"])
     spec = build_series_spec(
         name=body.name,
         topic=body.topic,
