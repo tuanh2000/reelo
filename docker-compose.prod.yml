@@ -165,8 +165,13 @@ services:
     networks: [reelo]
 
   # ---- OmniVoice (GPU voice clone microservice) ----------------------------
+  # OPT-IN: not started by the default deploy (profile "omnivoice"), and its tag
+  # is decoupled from the app IMAGE_TAG (built rarely on the GPU host). Enable:
+  #   docker compose -f docker-compose.prod.yml --env-file /opt/reelo/.env \
+  #     --profile omnivoice up -d omnivoice
   omnivoice:
-    image: ghcr.io/tuanh2000/reelo-omnivoice:${IMAGE_TAG:-latest}
+    profiles: ["omnivoice"]
+    image: ghcr.io/tuanh2000/reelo-omnivoice:${OMNIVOICE_TAG:-latest}
     restart: unless-stopped
     # Requires nvidia-container-toolkit on the host.
     gpus: all
