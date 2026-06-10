@@ -55,6 +55,11 @@ export interface Episode {
   status: EpisodeStatus;
   dur?: string;
   views?: string;
+  // Lazy script-gen progress (from GET /episodes/{id}). Set by the project screen
+  // only for `draft` episodes so it can show a "✍️ Đang viết kịch bản…" badge +
+  // a "Xem tiến độ" button while the worker is writing the first script. Undefined
+  // for episodes whose state is unambiguous from `status` alone.
+  scriptStatus?: "running" | "done" | "error" | null;
 }
 
 export interface Series {

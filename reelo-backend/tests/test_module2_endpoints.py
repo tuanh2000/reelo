@@ -39,6 +39,7 @@ class JobRow:
         self.state = kw.get("state", "queued")
         self.progress = kw.get("progress", 0)
         self.stderr = kw.get("stderr")
+        self.created_at = kw.get("created_at")
 
 
 class EpRow:
@@ -263,6 +264,24 @@ def test_poll_returns_children(m2_client):
     by_id = {j["id"]: j for j in jobs}
     assert by_id["c1"]["state"] == "done" and by_id["c1"]["icon"] == "mic"
     assert by_id["c2"]["state"] == "running"
+
+
+def test_poll_returns_parent_started_at(m2_client):
+    from datetime import datetime, timezone
+
+    store = m2_client.store
+    ts = datetime(2026, 6, 10, 3, 4, 5, tzinfo=timezone.utc)
+    store.jobs["parent_1"] = JobRow(
+        id="parent_1", user_id=FAKE_USER_ID, episode_id="e1", kind="parent",
+        name="ep", created_at=ts,
+    )
+    store.jobs["c1"] = JobRow(
+        id="c1", user_id=FAKE_USER_ID, episode_id="e1", parent_id="parent_1",
+        kind="voice", name="Voiceover", state="running", progress=10,
+    )
+    body = m2_client.get("/generation/parent_1").json()
+    assert body["started_at"] == ts.isoformat()
+    assert len(body["jobs"]) == 1
 
 
 def test_poll_404_missing_job(m2_client):

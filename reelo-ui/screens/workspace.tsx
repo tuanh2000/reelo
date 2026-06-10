@@ -9,9 +9,10 @@ import {
   generateEpisodeScript,
   getEpisode,
   startGeneration,
-  pollGeneration,
+  pollGenerationDetail,
   retryChild,
   type CostEstimate,
+  type EpisodeDetail,
   type SegmentSpec,
 } from "@/lib/api";
 
@@ -19,6 +20,42 @@ import {
 // down/busy (we keep polling regardless). ~90s per the spec.
 const SCRIPT_STALL_MS = 90_000;
 const SCRIPT_POLL_MS = 2000;
+
+// Parse an ISO server timestamp to epoch ms (NaN-safe → null on bad input).
+function isoToMs(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// Elapsed seconds since a SERVER timestamp, recomputed every tick AND whenever
+// the tab regains focus (so switching tabs / navigating away never resets it and
+// a throttled background timer can't drift it). `startedMs` is epoch ms (server
+// clock) or null when there is nothing to count. Returns whole seconds ≥ 0.
+function useServerElapsed(startedMs: number | null): number {
+  const [elapsed, setElapsed] = React.useState(() =>
+    startedMs == null ? 0 : Math.max(0, Math.floor((Date.now() - startedMs) / 1000)),
+  );
+  React.useEffect(() => {
+    if (startedMs == null) {
+      setElapsed(0);
+      return;
+    }
+    const recompute = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - startedMs) / 1000)));
+    recompute();
+    const id = setInterval(recompute, 1000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") recompute();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [startedMs]);
+  return elapsed;
+}
 
 // Web media providers offer a human curation step before produce: the aggregate
 // `web` plus the `web-*` family (web-commons photos / web-pexels clips). AI
@@ -199,10 +236,12 @@ function ProducingView({
   jobs,
   onDone,
   onRetry,
+  elapsed,
 }: {
   jobs: GenJob[];
   onDone: () => void;
   onRetry: (childId: string) => void;
+  elapsed?: number;
 }) {
   const allDone = jobs.length > 0 && jobs.every((j) => j.state === "done");
   const errorJobs = jobs.filter((j) => j.state === "error");
@@ -248,7 +287,7 @@ function ProducingView({
               ? "Đã dựng xong video!"
               : hasError
                 ? "Một số bước gặp lỗi"
-                : "Đang sản xuất tập này…"}
+                : `Đang sản xuất tập này…${elapsed ? ` (đã ${elapsed} giây)` : ""}`}
           </h3>
           <p className="muted" style={{ fontSize: 13.5, marginTop: 3 }}>
             {allDone
@@ -415,128 +454,166 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
 function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series: Series }) {
   const episode: Episode =
     route.episode || series.episodes.find((e) => e.status !== "published") || series.episodes[0];
-  // If we navigated in with a live job (from image-select after startGeneration,
-  // or a resumed produce), open straight into the producing view.
-  const [stage, setStage] = React.useState<"edit" | "producing">(
-    route.producing || route.jobId ? "producing" : "edit",
-  );
-  const [jobId, setJobId] = React.useState<string | null>(route.jobId ?? null);
-  const [jobs, setJobs] = React.useState<GenJob[]>([]);
-
-  // ---- Script segments (lazy gen) — explicit state machine over getEpisode ----
-  // phase: "loading"  = first fetch / kicking off lazy gen (brief)
-  //        "running"  = worker writing the script, no segments yet (show timer)
-  //        "done"     = segments present (show the editor)
-  //        "error"    = worker reported a failure (show copyable error + retry)
+  // ====================================================================== //
+  // Stage is DERIVED FROM THE BACKEND (source of truth), never from local   //
+  // navigation state. Whenever the workspace mounts — or the tab regains    //
+  // focus — we re-fetch GET /episodes/{id} and reconstruct everything:       //
+  //   • script_status running (no segments)  → "đang viết kịch bản" timer    //
+  //     anchored to script_started_at (server time).                         //
+  //   • segments present + no active produce  → editor ("kịch bản sẵn sàng").//
+  //   • generation.state running              → "đang sản xuất", poll that    //
+  //     job (jobId comes FROM THE BACKEND), elapsed = now − parent started_at.//
+  //   • generation.state done / assembled     → done → "Tiếp tục duyệt".      //
+  //   • script/produce error                  → ErrorBox.                     //
+  // So switching tabs / navigating away / refreshing / reopening all show     //
+  // the correct, durable state without the client holding any job id.         //
+  // ====================================================================== //
   type ScriptPhase = "loading" | "running" | "done" | "error";
+  const [stage, setStage] = React.useState<"edit" | "producing">("edit");
+  const [jobId, setJobId] = React.useState<string | null>(null);
+  const [jobs, setJobs] = React.useState<GenJob[]>([]);
+  // Server timestamps (epoch ms) the two elapsed counters are anchored to.
+  const [scriptStartedMs, setScriptStartedMs] = React.useState<number | null>(null);
+  const [produceStartedMs, setProduceStartedMs] = React.useState<number | null>(null);
+
   const [segments, setSegments] = React.useState<ScriptSegment[] | null>(null);
   const [scriptPhase, setScriptPhase] = React.useState<ScriptPhase>("loading");
   const [scriptError, setScriptError] = React.useState<string | null>(null);
-  // Elapsed seconds while running, + a stall flag once we pass SCRIPT_STALL_MS.
-  const [scriptElapsed, setScriptElapsed] = React.useState(0);
-  const [scriptStalled, setScriptStalled] = React.useState(false);
-  // Bump to force a fresh gen attempt (the "Thử lại" button).
+  const [produceError, setProduceError] = React.useState<string | null>(null);
+  // Bump to force a fresh script gen attempt (the "Thử lại" button) and to
+  // re-sync after starting a produce run.
   const [scriptAttempt, setScriptAttempt] = React.useState(0);
 
-  // Load (and if needed lazily generate) the episode script, then poll the
-  // episode until it is `done` or `error`. The poll is fully cleaned up on
-  // unmount / done / error so it never leaks. Demo/offline: a missing backend
-  // surfaces as an error (copyable) but the screen stays usable.
+  // Server-time elapsed counters (recompute every tick + on tab focus).
+  const scriptElapsed = useServerElapsed(scriptPhase === "running" ? scriptStartedMs : null);
+  const produceElapsed = useServerElapsed(stage === "producing" ? produceStartedMs : null);
+  const scriptStalled = scriptPhase === "running" && scriptElapsed * 1000 >= SCRIPT_STALL_MS;
+
+  // ---- Reconstruct stage from the backend (mount + tab focus + attempt) ----
   React.useEffect(() => {
     if (!route.episode) {
-      // Series opened without a specific episode — nothing to fetch yet.
       setScriptPhase("done");
       return;
     }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let tick: ReturnType<typeof setInterval> | null = null;
-    const startedAt = Date.now();
-    setSegments(null);
-    setScriptPhase("loading");
-    setScriptError(null);
-    setScriptElapsed(0);
-    setScriptStalled(false);
+    let kicked = false; // only enqueue lazy script gen once per attempt
 
-    const stopTimers = () => {
-      if (timer) clearTimeout(timer);
-      if (tick) clearInterval(tick);
-      timer = null;
-      tick = null;
-    };
-
-    const apply = (segs: SegmentSpec[]) => {
-      if (!alive) return;
-      stopTimers();
+    const applySegments = (segs: SegmentSpec[]) => {
       setSegments(segs.map(specToScript));
       setScriptPhase("done");
     };
 
+    // Map one episode detail snapshot onto the workspace state machine.
+    const reconcile = (detail: EpisodeDetail): { keepPolling: boolean } => {
+      const gen = detail.generation;
+      const producing = gen != null && gen.state === "running";
+      const hasSegments = !!detail.episode.segments?.length;
+
+      // Active produce job → producing view (jobId + elapsed FROM BACKEND).
+      if (producing && gen) {
+        setStage("producing");
+        setJobId(gen.jobId);
+        if (gen.jobs.length) setJobs(gen.jobs);
+        setProduceStartedMs(isoToMs(gen.startedAt));
+        setProduceError(null);
+        if (hasSegments && segments == null) applySegments(detail.episode.segments);
+        else if (hasSegments) setScriptPhase("done");
+        return { keepPolling: false }; // the produce effect drives polling
+      }
+
+      // Not producing → stay/return to edit; surface script segments or state.
+      setStage("edit");
+      if (gen != null) {
+        // A finished/failed produce run exists: keep its id so retries + the
+        // "Tiếp tục duyệt" handoff to review work after a remount.
+        setJobId(gen.jobId);
+        if (gen.jobs.length) setJobs(gen.jobs);
+        setProduceStartedMs(isoToMs(gen.startedAt));
+      }
+
+      if (hasSegments) {
+        applySegments(detail.episode.segments);
+        return { keepPolling: false };
+      }
+      if (detail.scriptStatus === "error") {
+        setScriptError(detail.scriptError || "Worker báo lỗi nhưng không kèm chi tiết.");
+        setScriptPhase("error");
+        return { keepPolling: false };
+      }
+      // running (or status not yet written) → timer anchored to server time.
+      setScriptStartedMs(isoToMs(detail.scriptStartedAt));
+      setScriptPhase("running");
+      return { keepPolling: true };
+    };
+
     const fail = (msg: string) => {
       if (!alive) return;
-      stopTimers();
       setScriptError(msg);
       setScriptPhase("error");
     };
 
-    // Drive the elapsed-seconds counter + stall warning while we wait.
-    const startRunningClock = () => {
-      if (tick) return;
-      setScriptPhase("running");
-      tick = setInterval(() => {
-        if (!alive) return;
-        const secs = Math.floor((Date.now() - startedAt) / 1000);
-        setScriptElapsed(secs);
-        if (secs * 1000 >= SCRIPT_STALL_MS) setScriptStalled(true);
-      }, 1000);
-    };
-
-    const pollUntilSettled = async () => {
+    const loadAndPoll = async () => {
       try {
         const detail = await getEpisode(episode.id);
         if (!alive) return;
-        if (detail.episode.segments && detail.episode.segments.length > 0) {
-          apply(detail.episode.segments);
-          return;
+        // Kick off lazy gen once if nothing has been scripted/started yet.
+        if (
+          !kicked &&
+          !detail.episode.segments?.length &&
+          detail.scriptStatus == null &&
+          detail.generation == null
+        ) {
+          kicked = true;
+          try {
+            const ep = await generateEpisodeScript(episode.id);
+            if (!alive) return;
+            if (ep.segments?.length) {
+              applySegments(ep.segments);
+              return;
+            }
+          } catch (e) {
+            fail(e instanceof Error ? e.message : "Không tạo được kịch bản.");
+            return;
+          }
         }
-        if (detail.scriptStatus === "error") {
-          fail(detail.scriptError || "Worker báo lỗi nhưng không kèm chi tiết.");
-          return;
-        }
-        // still running (or status not yet written) → keep the clock + poll again
-        startRunningClock();
-        timer = setTimeout(pollUntilSettled, SCRIPT_POLL_MS);
+        const { keepPolling } = reconcile(detail);
+        if (keepPolling) timer = setTimeout(loadAndPoll, SCRIPT_POLL_MS);
       } catch (e) {
         fail(e instanceof Error ? e.message : "Không tải được kịch bản.");
       }
     };
 
-    // Kick off lazy gen (idempotent server-side): returns segments if already
-    // scripted, else an empty shell + (re)enqueues the worker; then we poll.
-    generateEpisodeScript(episode.id)
-      .then((ep) => {
-        if (!alive) return;
-        if (ep.segments && ep.segments.length > 0) apply(ep.segments);
-        else {
-          startRunningClock();
-          pollUntilSettled();
-        }
-      })
-      .catch((e) => {
-        fail(e instanceof Error ? e.message : "Không tạo được kịch bản.");
-      });
+    setScriptPhase("loading");
+    setScriptError(null);
+    void loadAndPoll();
+
+    // Re-sync the moment the tab becomes visible again (no reset, no drift).
+    const onVis = () => {
+      if (document.visibilityState === "visible" && alive) {
+        if (timer) clearTimeout(timer);
+        void loadAndPoll();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       alive = false;
-      stopTimers();
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episode.id, scriptAttempt]);
 
-  const retryScript = () => setScriptAttempt((n) => n + 1);
+  const retryScript = () => {
+    setSegments(null);
+    setScriptStartedMs(null);
+    setScriptAttempt((n) => n + 1);
+  };
 
-  // ---- Produce: poll the real GenJob[] while a job is in flight ----
-  const [produceError, setProduceError] = React.useState<string | null>(null);
+  // ---- Produce: poll the active job while producing (jobId from backend) ----
+  // Elapsed is anchored to the parent's server started_at (re-synced each poll),
+  // so a throttled background tab can't drift it and a remount can't reset it.
   React.useEffect(() => {
     if (stage !== "producing" || !jobId) return;
     let alive = true;
@@ -544,12 +621,12 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
 
     const tick = async () => {
       try {
-        const next = await pollGeneration(jobId);
+        const { jobs: next, startedAt } = await pollGenerationDetail(jobId);
         if (!alive) return;
         setJobs(next);
-        if (!allTerminal(next)) {
-          timer = setTimeout(tick, POLL_MS);
-        }
+        if (startedAt) setProduceStartedMs(isoToMs(startedAt));
+        setProduceError(null);
+        if (!allTerminal(next)) timer = setTimeout(tick, POLL_MS);
       } catch (e) {
         if (!alive) return;
         setProduceError(e instanceof Error ? e.message : "Mất kết nối khi theo dõi tiến độ.");
@@ -557,11 +634,21 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
         timer = setTimeout(tick, POLL_MS * 2);
       }
     };
-    tick();
+    void tick();
+
+    // Tab focus → poll immediately + re-anchor elapsed to server time.
+    const onVis = () => {
+      if (document.visibilityState === "visible" && alive) {
+        if (timer) clearTimeout(timer);
+        void tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       alive = false;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [stage, jobId]);
 
@@ -584,6 +671,9 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
       }
       setJobId(id);
       setJobs([]);
+      // started_at is read from the backend on the first poll; until then leave
+      // it null (the counter simply shows 0s for a beat).
+      setProduceStartedMs(null);
       setStage("producing");
     } catch (e) {
       setProduceError(e instanceof Error ? e.message : "Không bắt đầu được quá trình sản xuất.");
@@ -741,6 +831,7 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
             <ProducingView
               jobs={jobs}
               onRetry={onRetry}
+              elapsed={produceElapsed}
               onDone={() => nav({ name: "review", series, episode, jobId: jobId ?? undefined })}
             />
           )}

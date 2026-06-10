@@ -65,7 +65,14 @@ async def poll_generation(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found"
         )
     children = await repo.children_for_episode(user_id, parent.episode_id)
-    return PollGenerationResponse(jobs=[jobmod.row_to_genjob(c) for c in children])
+    # Surface the parent's seed time (server clock) so the UI can anchor the
+    # produce elapsed counter to server time instead of a client mount timer.
+    created = getattr(parent, "created_at", None)
+    started_at = created.isoformat() if created is not None else None
+    return PollGenerationResponse(
+        jobs=[jobmod.row_to_genjob(c) for c in children],
+        started_at=started_at,
+    )
 
 
 @router.post("/{job_id}/retry/{child_id}", response_model=PollGenerationResponse)

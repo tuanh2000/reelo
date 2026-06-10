@@ -252,6 +252,19 @@ export interface EpisodeAssets {
 }
 /** Lazy script-gen progress surfaced on GET /episodes/{id} (workspace polls it). */
 export type ScriptStatus = "running" | "done" | "error";
+/**
+ * Most-recent / active produce job for an episode (workspace state recovery).
+ * Lets the workspace rebuild the "đang sản xuất" view from the BACKEND after a
+ * tab-switch / navigate-away / refresh, without the client holding the jobId.
+ * `state` is derived server-side from the child jobs; `startedAt` is the parent's
+ * seed time (ISO server clock) so produce elapsed = now − startedAt.
+ */
+export interface GenerationLookup {
+  jobId: string;
+  state: "running" | "done" | "error";
+  startedAt: string | null;
+  jobs: GenJob[];
+}
 export interface EpisodeDetail {
   seriesId: string;
   episode: EpisodeSpec;
@@ -260,13 +273,21 @@ export interface EpisodeDetail {
   // `scriptError` carries a short, copyable message (provider + cause).
   scriptStatus: ScriptStatus | null;
   scriptError: string | null;
+  // ISO server timestamp stamped when script gen entered `running` (anchor for
+  // the workspace timer on SERVER time, not a client mount clock). Null when not
+  // running.
+  scriptStartedAt: string | null;
+  // Most-recent produce job, or null if never produced. Source of truth for the
+  // workspace producing-view recovery.
+  generation: GenerationLookup | null;
 }
 /**
  * Fetch a single episode's live spec (status/segments/youtube) + signed asset
- * URLs + lazy script-gen status. Used to (a) poll until lazy script gen flips to
- * `done`/`error` (so the workspace shows state, not an endless spinner), and
- * (b) source the rendered video + thumbnails for the review screen without first
- * POSTing to /publish/export.
+ * URLs + lazy script-gen status + active produce-job lookup. Used to (a) poll
+ * until lazy script gen flips to `done`/`error` (so the workspace shows state,
+ * not an endless spinner), (b) source the rendered video + thumbnails for review,
+ * and (c) reconstruct the producing view (stage + jobId + elapsed) from the
+ * backend whenever the workspace mounts / the tab regains focus.
  */
 export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
   const data = await request<{
@@ -275,6 +296,13 @@ export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
     assets: { videoUrl: string | null; srtUrl: string | null; thumbnails: string[] };
     script_status?: ScriptStatus | null;
     script_error?: string | null;
+    script_started_at?: string | null;
+    generation?: {
+      jobId: string;
+      state: "running" | "done" | "error";
+      started_at?: string | null;
+      jobs?: GenJob[] | null;
+    } | null;
   }>(`/episodes/${episodeId}`);
   return {
     seriesId: data.series_id,
@@ -286,6 +314,15 @@ export async function getEpisode(episodeId: string): Promise<EpisodeDetail> {
     },
     scriptStatus: data.script_status ?? null,
     scriptError: data.script_error ?? null,
+    scriptStartedAt: data.script_started_at ?? null,
+    generation: data.generation
+      ? {
+          jobId: data.generation.jobId,
+          state: data.generation.state,
+          startedAt: data.generation.started_at ?? null,
+          jobs: data.generation.jobs ?? [],
+        }
+      : null,
   };
 }
 
@@ -309,6 +346,19 @@ export async function startGeneration(
 export async function pollGeneration(jobId: string): Promise<GenJob[]> {
   const data = await request<{ jobs: GenJob[] }>(`/generation/${jobId}`);
   return data.jobs;
+}
+/**
+ * Poll a produce job and also read the parent's seed time (ISO server clock), so
+ * the workspace can anchor its elapsed counter to SERVER time (stable across
+ * tab-switch / remount / throttled timers). `startedAt` is null if unrecorded.
+ */
+export async function pollGenerationDetail(
+  jobId: string,
+): Promise<{ jobs: GenJob[]; startedAt: string | null }> {
+  const data = await request<{ jobs: GenJob[]; started_at?: string | null }>(
+    `/generation/${jobId}`,
+  );
+  return { jobs: data.jobs, startedAt: data.started_at ?? null };
 }
 export async function retryChild(jobId: string, childId: string): Promise<GenJob[]> {
   const data = await request<{ jobs: GenJob[] }>(

@@ -122,12 +122,21 @@ class _FakeEpisodeRepo:
     async def get(self, user_id, episode_id):
         return self.ep_row if self.ep_row.id == episode_id else None
 
+    async def set_status(self, user_id, episode_id, status):
+        row = await self.get(user_id, episode_id)
+        if row is not None:
+            row.status_history = getattr(row, "status_history", [])
+            row.status_history.append(status)
+            row.status = status
+
     async def set_paths(self, user_id, episode_id, paths, *, urls=None, status=None, merge=True):
         row = await self.get(user_id, episode_id)
         if row is None:
             return None
         row.paths = {**(row.paths or {}), **paths} if merge else dict(paths)
         if status is not None:
+            row.status_history = getattr(row, "status_history", [])
+            row.status_history.append(status)
             row.status = status
         return row
 
@@ -234,8 +243,9 @@ async def test_runner_end_to_end_assembles(tmp_path, monkeypatch):
     assert result["status"] == "assembled"
     assert result["images"] == 2
     assert "final" in result["paths"]
-    # episode row flipped
+    # episode row flipped: assets (đang sản xuất) → assembled, in that order
     assert ep_row.status == "assembled"
+    assert getattr(ep_row, "status_history", []) == ["assets", "assembled"]
     # all child jobs done
     states = {r.kind: r.state for r in jobs_store.values() if r.parent_id is not None}
     assert states["voice"] == "done"

@@ -20,8 +20,9 @@ from fastapi import APIRouter, HTTPException, status
 from clients.base import CallContext
 from clients.registry import get_registry
 from db.keystore_backend import load_user_keystore
-from db.repository import ApiKeyRepo, EpisodeRepo
+from db.repository import ApiKeyRepo, EpisodeRepo, GenJobRepo
 from keystore import build_cipher_from_settings
+from models.jobs import GenJob
 from module1.persistence import find_series_for_episode
 from module2 import curation as cur
 from storage import get_storage
@@ -31,12 +32,61 @@ from web.schemas import (
     EpisodeAssets,
     EpisodeDetailResponse,
     EpisodeScriptResponse,
+    GenerationLookup,
     ImageCandidatesResponse,
     ImageSelectionRequest,
 )
 from worker.enqueue import enqueue_job
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
+
+
+def _child_to_genjob(row: object) -> GenJob:
+    """Project a child ``gen_jobs`` row onto the UI-facing :class:`GenJob`.
+
+    A small local projection (instead of importing Module 2's ``row_to_genjob``)
+    so the episodes router stays free of Module 2 deps. Surfaces ``stderr`` only
+    for failed jobs, mirroring the poll endpoint.
+    """
+    state = getattr(row, "state", "queued")
+    return GenJob(
+        id=getattr(row, "id"),
+        name=getattr(row, "name", ""),
+        icon=getattr(row, "icon", "") or "circle",
+        state=state,  # type: ignore[arg-type]
+        progress=getattr(row, "progress", 0) or 0,
+        stderr=getattr(row, "stderr", None) if state == "error" else None,
+    )
+
+
+def _generation_lookup(parent: object, children: list) -> GenerationLookup:
+    """Summarize the most-recent produce job for state recovery.
+
+    ``state`` is derived from the children (the parent row's own state can lag):
+    "error" if any child errored, "done" if there are children and all are
+    terminal-done, else "running" (work in flight or not yet seeded). With no
+    children we fall back to the parent's own state. ``started_at`` is the parent's
+    ``created_at`` ISO timestamp (``None`` in fakes without one).
+    """
+    jobs = [_child_to_genjob(c) for c in children]
+    if jobs:
+        if any(j.state == "error" for j in jobs):
+            state = "error"
+        elif all(j.state == "done" for j in jobs):
+            state = "done"
+        else:
+            state = "running"
+    else:
+        parent_state = getattr(parent, "state", "queued")
+        state = parent_state if parent_state in ("running", "done", "error") else "running"
+    created = getattr(parent, "created_at", None)
+    started_at = created.isoformat() if created is not None else None
+    return GenerationLookup(
+        job_id=getattr(parent, "id"),
+        state=state,  # type: ignore[arg-type]
+        started_at=started_at,
+        jobs=jobs,
+    )
 
 
 async def _media_ctx(user_id: str, db: DbSession) -> CallContext:
@@ -86,8 +136,18 @@ async def get_episode(
     # the workspace can show state instead of an infinite spinner. If segments
     # already exist, the script is effectively done regardless of any stale flag.
     script_status, script_error = EpisodeRepo.script_state(paths)
+    script_started_at = EpisodeRepo.script_started_at(paths)
     if ep.segments:
-        script_status, script_error = "done", None
+        script_status, script_error, script_started_at = "done", None, None
+
+    # Recover the most-recent produce job so the workspace can rebuild its "đang
+    # sản xuất" view from the backend (no client-held jobId). None if never run.
+    gen_repo = GenJobRepo(db)
+    parent = await gen_repo.latest_parent_for_episode(user_id, episode_id)
+    generation: GenerationLookup | None = None
+    if parent is not None:
+        children = await gen_repo.children_for_episode(user_id, episode_id)
+        generation = _generation_lookup(parent, children)
 
     return EpisodeDetailResponse(
         series_id=series_row.id,
@@ -95,6 +155,8 @@ async def get_episode(
         assets=assets,
         script_status=script_status,  # type: ignore[arg-type]
         script_error=script_error,
+        script_started_at=script_started_at,
+        generation=generation,
     )
 
 

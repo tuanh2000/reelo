@@ -19,7 +19,7 @@ import {
   type EpisodeStatus,
 } from "@/lib/data";
 import { DEMO_SERIES } from "@/lib/demo-fixtures";
-import { listSeries, renameSeries, ApiError } from "@/lib/api";
+import { listSeries, getEpisode, renameSeries, ApiError } from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
   return (
@@ -35,15 +35,51 @@ function MiniSteps({ step }: { step: number }) {
   );
 }
 
-function epAction(status: EpisodeStatus): { label: string; icon: string; variant: "secondary" | "soft" | "primary"; to: Route["name"] } {
-  if (status === "published") return { label: "Xem", icon: "play", variant: "secondary", to: "review" };
-  if (status === "draft") return { label: "Bắt đầu", icon: "sparkles", variant: "soft", to: "workspace" };
+// Action button + (optional) in-progress badge, driven by the episode's REAL
+// state (status + lazy script_status). In-progress episodes route to the
+// workspace, which rebuilds the live progress view from the backend.
+//   • script_status running (draft) → badge "✍️ Đang viết kịch bản…" + "Xem tiến độ".
+//   • status assets (đang sản xuất)  → badge "🎬 Đang sản xuất…" + "Xem tiến độ".
+//   • assembled                      → "Duyệt & xuất".
+//   • published                      → "Xem".
+//   • draft (chưa có gì)             → "Bắt đầu".  scripted → "Tiếp tục".
+function epAction(
+  ep: Episode,
+): {
+  label: string;
+  icon: string;
+  variant: "secondary" | "soft" | "primary";
+  to: Route["name"];
+  badge?: { label: string };
+} {
+  if (ep.status === "published") return { label: "Xem", icon: "play", variant: "secondary", to: "review" };
+  if (ep.status === "assembled")
+    return { label: "Duyệt & xuất", icon: "youtube", variant: "primary", to: "review" };
+  if (ep.status === "assets")
+    return {
+      label: "Xem tiến độ",
+      icon: "loader",
+      variant: "primary",
+      to: "workspace",
+      badge: { label: "Đang sản xuất…" },
+    };
+  if (ep.status === "draft") {
+    if (ep.scriptStatus === "running")
+      return {
+        label: "Xem tiến độ",
+        icon: "loader",
+        variant: "primary",
+        to: "workspace",
+        badge: { label: "Đang viết kịch bản…" },
+      };
+    return { label: "Bắt đầu", icon: "sparkles", variant: "soft", to: "workspace" };
+  }
   return { label: "Tiếp tục", icon: "arrow-right", variant: "primary", to: "workspace" };
 }
 
 function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series: Series; nav: Nav }) {
   const st = EP_STATUS[ep.status];
-  const act = epAction(ep.status);
+  const act = epAction(ep);
   return (
     <div className="card" style={{ boxShadow: "none", display: "flex", alignItems: "center", gap: 14, padding: 13 }}>
       <span
@@ -69,7 +105,14 @@ function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series
           {ep.title}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
-          <StatusPill status={ep.status} />
+          {act.badge ? (
+            <Badge tone="brand">
+              <Icon name="loader" size={12} className="spin" />
+              {act.badge.label}
+            </Badge>
+          ) : (
+            <StatusPill status={ep.status} />
+          )}
           <MiniSteps step={st.step} />
           {ep.dur && (
             <span className="subtle" style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -239,20 +282,53 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
   // no routed-in series AND we are in the offline demo.
   const [series, setSeries] = React.useState<Series>(route.series || DEMO_SERIES[0]);
 
+  // Refresh the episode list (titles/statuses) from the backend on mount AND
+  // whenever the tab regains focus, so the per-episode badge ("đang viết kịch
+  // bản" / "đang sản xuất") + action buttons reflect the live worker progress
+  // without a manual reload. Draft episodes are additionally probed for their
+  // lazy script_status (the series list only carries `status`), so a draft whose
+  // worker is mid-write shows the writing badge. Bounded: only `draft` episodes
+  // are probed, and only their script_status is read.
   React.useEffect(() => {
     if (!route.series) return; // demo / no real series → keep seed
     let alive = true;
-    listSeries()
-      .then((all) => {
+
+    const refresh = async () => {
+      try {
+        const all = await listSeries();
         if (!alive) return;
         const fresh = all.find((s) => s.id === route.series!.id);
-        if (fresh) setSeries(fresh);
-      })
-      .catch(() => {
+        if (!fresh) return;
+        // Probe lazy script_status for draft episodes (the only ambiguous state).
+        const drafts = fresh.episodes.filter((e) => e.status === "draft");
+        const statuses = await Promise.all(
+          drafts.map((e) =>
+            getEpisode(e.id)
+              .then((d) => ({ id: e.id, scriptStatus: d.scriptStatus }))
+              .catch(() => ({ id: e.id, scriptStatus: null as "running" | "done" | "error" | null })),
+          ),
+        );
+        if (!alive) return;
+        const byId = new Map(statuses.map((s) => [s.id, s.scriptStatus]));
+        setSeries({
+          ...fresh,
+          episodes: fresh.episodes.map((e) =>
+            e.status === "draft" ? { ...e, scriptStatus: byId.get(e.id) ?? null } : e,
+          ),
+        });
+      } catch {
         /* keep the routed-in copy on network error */
-      });
+      }
+    };
+
+    void refresh();
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, [route.series]);
 

@@ -361,6 +361,15 @@ async def run_produce_episode(
     await update_job(
         user_id, seeded.parent_id, state="running", progress=jobmod.PROGRESS_START
     )
+    # Reflect "đang sản xuất" on the episode itself (assets) so the project screen
+    # badge + the workspace stage recovery (GET /episodes/{id}) show progress even
+    # for a user who navigated away. Flipped to assembled at the end (best-effort:
+    # a stale scripted status must never block the produce pipeline).
+    try:
+        async with session_scope() as session:
+            await EpisodeRepo(session).set_status(user_id, episode_id, "assets")
+    except Exception as exc:  # noqa: BLE001 — status surfacing is best-effort
+        log.warning("could not mark episode %s assets: %s", episode_id, exc)
 
     # Resolve a work folder. Keep the whole project folder (M2-10).
     base = Path(work_root) if work_root else Path(tempfile.gettempdir()) / "reelo-produce"

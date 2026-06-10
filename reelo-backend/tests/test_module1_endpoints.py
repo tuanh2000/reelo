@@ -32,6 +32,10 @@ class Store:
         self.series: dict[str, SeriesSpec] = {}
         # episode_id -> object with .paths (signed-asset source for GET /episodes/{id})
         self.episodes: dict[str, object] = {}
+        # episode_id -> latest parent gen-job row (GET /episodes generation lookup)
+        self.jobs: dict[str, object] = {}
+        # episode_id -> list of child gen-job rows
+        self.job_children: dict[str, list] = {}
 
     def episode_index(self) -> dict[str, str]:
         return {ep.episode_id: sid for sid, sp in self.series.items() for ep in sp.episodes}
@@ -84,6 +88,21 @@ def m1_client(store, monkeypatch):
             st = p.get("script_status")
             return (st if isinstance(st, str) else None), p.get("script_error")
 
+        @staticmethod
+        def script_started_at(paths):
+            started = (paths or {}).get("script_started_at")
+            return started if isinstance(started, str) else None
+
+    class FakeGenJobRepo:
+        def __init__(self, session):
+            pass
+
+        async def latest_parent_for_episode(self, user_id, episode_id):
+            return store.jobs.get(episode_id)
+
+        async def children_for_episode(self, user_id, episode_id):
+            return getattr(store, "job_children", {}).get(episode_id, [])
+
     class FakeStorage:
         async def signed_url(self, key, **kw):
             return f"https://signed/{key}"
@@ -122,6 +141,7 @@ def m1_client(store, monkeypatch):
     monkeypatch.setattr(episodes_router, "find_series_for_episode", fake_find_for_episode)
     monkeypatch.setattr(episodes_router, "enqueue_job", fake_enqueue)
     monkeypatch.setattr(episodes_router, "EpisodeRepo", FakeEpisodeRepo)
+    monkeypatch.setattr(episodes_router, "GenJobRepo", FakeGenJobRepo)
     monkeypatch.setattr(episodes_router, "get_storage", lambda: FakeStorage())
     # series router
     monkeypatch.setattr(series_router, "save_series_spec", fake_save)
@@ -482,6 +502,63 @@ def test_get_episode_returns_signed_assets_when_assembled(m1_client):
 
 def test_get_episode_404(m1_client):
     assert m1_client.get("/episodes/missing").status_code == 404
+
+
+class _JobRow:
+    """Minimal parent/child gen-job stand-in for the generation-lookup tests."""
+
+    def __init__(self, **kw):
+        self.id = kw.get("id", "parent_x")
+        self.name = kw.get("name", "ep")
+        self.icon = kw.get("icon", "")
+        self.state = kw.get("state", "queued")
+        self.progress = kw.get("progress", 0)
+        self.stderr = kw.get("stderr")
+        self.created_at = kw.get("created_at")
+
+
+def test_get_episode_surfaces_script_started_at_when_running(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.episodes["e1"] = _EpRow(  # type: ignore[attr-defined]
+        {"script_status": "running", "script_started_at": "2026-06-10T00:00:00+00:00"}
+    )
+    body = m1_client.get("/episodes/e1").json()
+    assert body["script_status"] == "running"
+    assert body["script_started_at"] == "2026-06-10T00:00:00+00:00"
+    assert body["generation"] is None
+
+
+def test_get_episode_returns_generation_lookup_when_producing(m1_client):
+    from datetime import datetime, timezone
+
+    store = m1_client.store  # type: ignore[attr-defined]
+    _seed_series(store)
+    ts = datetime(2026, 6, 10, 1, 2, 3, tzinfo=timezone.utc)
+    store.jobs["e1"] = _JobRow(id="parent_1", state="running", created_at=ts)
+    store.job_children["e1"] = [
+        _JobRow(id="c1", name="Voiceover", icon="mic", state="done", progress=100),
+        _JobRow(id="c2", name="Image 1", icon="image", state="running", progress=10),
+    ]
+    body = m1_client.get("/episodes/e1").json()
+    gen = body["generation"]
+    assert gen is not None
+    assert gen["jobId"] == "parent_1"
+    assert gen["state"] == "running"  # a child still running
+    assert gen["started_at"] == ts.isoformat()
+    assert {j["id"] for j in gen["jobs"]} == {"c1", "c2"}
+
+
+def test_get_episode_generation_done_when_all_children_done(m1_client):
+    store = m1_client.store  # type: ignore[attr-defined]
+    _seed_series(store)
+    store.jobs["e1"] = _JobRow(id="parent_1", state="done")
+    store.job_children["e1"] = [
+        _JobRow(id="c1", state="done", progress=100),
+        _JobRow(id="c2", state="done", progress=100),
+    ]
+    gen = m1_client.get("/episodes/e1").json()["generation"]
+    assert gen["state"] == "done"
+    assert gen["started_at"] is None  # parent had no created_at
 
 
 # --------------------------------------------------------------------------- #

@@ -8,6 +8,7 @@ shape (``Repo(session)``) and the user-scoping invariant.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -234,16 +235,31 @@ class EpisodeRepo:
         ``"error"`` and cleared on every ``running``/``done`` transition. Kept in
         the existing ``paths`` JSONB (no migration) under the ``script_status`` /
         ``script_error`` keys, merged so asset keys are not clobbered.
+
+        On the ``running`` transition we also stamp ``script_started_at`` (ISO-8601
+        UTC) so the UI can compute "đã viết X giây" from a SERVER mốc thời gian
+        instead of a client timer (which resets on tab-switch / remount). It is
+        only (re)written when there is no live ``script_started_at`` yet, so a
+        re-fetch that re-marks ``running`` does not keep resetting the clock; it is
+        cleared on ``done``/``error`` so a later run starts fresh.
         """
         ep = await self.get(user_id, episode_id)
         if ep is None:
             return None
         paths = {**(ep.paths or {})}
         paths["script_status"] = script_status
-        if script_status == "error":
-            paths["script_error"] = error or "unknown error"
-        else:
+        if script_status == "running":
+            if not paths.get("script_started_at"):
+                paths["script_started_at"] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
             paths.pop("script_error", None)
+        elif script_status == "error":
+            paths["script_error"] = error or "unknown error"
+            paths.pop("script_started_at", None)
+        else:  # done
+            paths.pop("script_error", None)
+            paths.pop("script_started_at", None)
         ep.paths = paths
         await self.s.flush()
         return ep
@@ -254,6 +270,12 @@ class EpisodeRepo:
         p = paths or {}
         status = p.get("script_status")
         return (status if isinstance(status, str) else None), p.get("script_error")
+
+    @staticmethod
+    def script_started_at(paths: dict[str, Any] | None) -> str | None:
+        """Project the ISO ``script_started_at`` server timestamp out of ``paths``."""
+        started = (paths or {}).get("script_started_at")
+        return started if isinstance(started, str) else None
 
     async def get_curation(self, user_id: str, episode_id: str) -> dict[str, Any] | None:
         """Return the episode's ``image_curation`` blob (M2-12), or None."""
@@ -325,6 +347,27 @@ class GenJobRepo:
             select(GenJobRow).where(GenJobRow.id == job_id, GenJobRow.user_id == user_id)
         )
         return res.scalar_one_or_none()
+
+    async def latest_parent_for_episode(
+        self, user_id: str, episode_id: str
+    ) -> GenJobRow | None:
+        """Most-recent parent (produce) job for an episode, or ``None``.
+
+        Used to reconstruct the workspace's "đang sản xuất" view from the backend
+        after a tab-switch / navigate-away / refresh: the client no longer needs to
+        hold the ``jobId`` — it is recovered from the latest parent row. Ordered by
+        ``created_at`` (then ``id`` as a tiebreak) so the newest run wins.
+        """
+        res = await self.s.execute(
+            select(GenJobRow)
+            .where(
+                GenJobRow.episode_id == episode_id,
+                GenJobRow.user_id == user_id,
+                GenJobRow.parent_id.is_(None),
+            )
+            .order_by(GenJobRow.created_at.desc(), GenJobRow.id.desc())
+        )
+        return res.scalars().first()
 
     async def add(self, row: GenJobRow) -> GenJobRow:
         self.s.add(row)

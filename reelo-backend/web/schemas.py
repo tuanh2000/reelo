@@ -110,6 +110,31 @@ class EpisodeAssets(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class GenerationLookup(BaseModel):
+    """Most-recent / active produce job for an episode (workspace state recovery).
+
+    Returned on ``GET /episodes/{id}`` so the workspace can rebuild the "đang sản
+    xuất" view from the BACKEND (the source of truth) after a tab-switch /
+    navigate-away / refresh, without the client holding the ``jobId``. ``None`` on
+    the episode response when the episode has never been produced.
+
+    - ``job_id`` — the parent ``gen_jobs`` id to poll (``GET /generation/{jobId}``).
+    - ``state`` — "running" while any child is queued/running (or the parent is),
+      "error" if it failed, "done" once finished.
+    - ``started_at`` — ISO-8601 server timestamp (the parent's ``created_at``) so
+      the UI computes produce elapsed = now − started_at on server time.
+    - ``jobs`` — the child :class:`GenJob` list (same shape as the poll endpoint)
+      so the producing view renders immediately on mount, before the first poll.
+    """
+
+    job_id: str = Field(..., alias="jobId")
+    state: Literal["running", "done", "error"]
+    started_at: str | None = None
+    jobs: list[GenJob] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
 class EpisodeDetailResponse(BaseModel):
     """``GET /episodes/{id}`` — full episode spec + signed asset URLs + series id.
 
@@ -128,6 +153,13 @@ class EpisodeDetailResponse(BaseModel):
     # ``script_error`` carries a short, copyable message only when status="error".
     script_status: Literal["running", "done", "error"] | None = None
     script_error: str | None = None
+    # ISO-8601 server timestamp stamped when script-gen entered ``running`` (so the
+    # workspace timer is anchored to server time, not a client mount clock). None
+    # unless script gen is/was running.
+    script_started_at: str | None = None
+    # Most-recent produce job for this episode (state recovery), or None if never
+    # produced. The workspace derives its stage from this instead of client state.
+    generation: GenerationLookup | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -201,9 +233,16 @@ class StartGenerationResponse(BaseModel):
 
 
 class PollGenerationResponse(BaseModel):
-    """Maps ``pollGeneration(jobId) -> GenJob[]``."""
+    """Maps ``pollGeneration(jobId) -> GenJob[]`` (+ parent start time).
+
+    ``started_at`` is the ISO-8601 server timestamp the parent produce job was
+    seeded (its ``created_at``), so the workspace computes produce elapsed = now −
+    started_at on SERVER time — stable across tab-switch / remount, unaffected by a
+    throttled background timer. ``None`` if the parent has no recorded timestamp.
+    """
 
     jobs: list[GenJob]
+    started_at: str | None = None
 
 
 class MusicUploadResponse(BaseModel):
