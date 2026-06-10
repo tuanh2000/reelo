@@ -6,7 +6,7 @@ import React from "react";
 import { Icon, Badge, Button, Card, ChatBubble } from "@/components/ui";
 import { MiniMark } from "@/components/logo";
 import { DEMO_FALLBACK, WIZARD_SEED, type Nav, type OutlineItem, type SeriesDraft } from "@/lib/data";
-import { sendWizardMessage, ApiError } from "@/lib/api";
+import { sendWizardMessage, getProviderSettings, ApiError } from "@/lib/api";
 
 interface Msg {
   role: "ai" | "user";
@@ -126,7 +126,54 @@ function WizardOutlineItem({
   );
 }
 
+// Gate: before creating a series the account must have a script + image
+// provider configured (account-level Settings). Three states: undefined =
+// checking, true/false = ready/not. In the offline demo we skip the gate.
+function CreateGate({ nav }: { nav: Nav }) {
+  return (
+    <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh" }}>
+      <Card style={{ padding: 28, maxWidth: 460, textAlign: "center" }}>
+        <span
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 16,
+            background: "var(--brand-tint)",
+            color: "var(--brand)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 16,
+          }}
+        >
+          <Icon name="settings" size={26} />
+        </span>
+        <h2 style={{ fontSize: 20, marginBottom: 10 }}>Cần cấu hình AI trước</h2>
+        <p className="muted" style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>
+          Hãy chọn nhà cung cấp cho <b>Viết kịch bản</b> và <b>Dựng ảnh</b> (và giọng đọc) trong trang
+          Cấu hình AI. Cấu hình một lần và dùng chung cho mọi series.
+        </p>
+        <Button variant="primary" size="md" icon="arrow-right" onClick={() => nav({ name: "settings" })}>
+          Đi tới Cấu hình AI
+        </Button>
+      </Card>
+    </div>
+  );
+}
+
 export function WizardScreen({ nav }: { nav: Nav }) {
+  // Account-level provider readiness gate (script + image must be configured).
+  // undefined = still checking; true = ready; false = show the gate panel.
+  const [ready, setReady] = React.useState<boolean | undefined>(
+    DEMO_FALLBACK ? true : undefined,
+  );
+  React.useEffect(() => {
+    if (DEMO_FALLBACK) return;
+    getProviderSettings()
+      .then((s) => setReady(s.script_ready && s.image_ready))
+      .catch(() => setReady(true)); // backend unreachable → don't hard-block; approve still gates
+  }, []);
+
   // Demo mode (offline) keeps the canned conversation + seed outline so the UI is
   // usable with no backend. Prod starts from a single greeting and lets the real
   // wizard LLM (POST /wizard/message) drive both the reply and the outline.
@@ -193,6 +240,18 @@ export function WizardScreen({ nav }: { nav: Nav }) {
       [n[idx], n[j]] = [n[j], n[idx]];
       return n;
     });
+
+  // Gate: still checking → spinner; not configured → route to Settings.
+  if (ready === undefined) {
+    return (
+      <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh" }}>
+        <Icon name="loader" size={26} style={{ color: "var(--brand)" }} />
+      </div>
+    );
+  }
+  if (ready === false) {
+    return <CreateGate nav={nav} />;
+  }
 
   return (
     <div className="page page-wide" style={{ height: "100%", display: "flex", flexDirection: "column", paddingBottom: 24 }}>

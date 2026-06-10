@@ -125,9 +125,11 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
       description,
       aspect,
     };
-    const providers = draft.providers || { script: "gemini", image: "web", voice: "edge" };
+    // Providers are account-level (Settings page) and snapshotted server-side at
+    // approve; this voice config only carries mode/sample. The backend overrides
+    // `voice.provider` with the account voice provider.
     const voice: VoiceConfigSpec = {
-      provider: providers.voice,
+      provider: "edge",
       voice_id: "",
       mode: "preset",
     };
@@ -137,7 +139,6 @@ export function StyleScreen({ nav, route }: { nav: Nav; route: Route }) {
       target_minutes: draft.target_minutes || 10,
       density: draft.density || "standard",
       aspect,
-      providers,
       voice,
       image_style,
     };

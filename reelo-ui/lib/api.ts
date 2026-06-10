@@ -203,7 +203,9 @@ export interface SeriesConfig {
   target_minutes: number;
   density: "light" | "standard" | "dense";
   aspect: "16:9" | "9:16";
-  providers: { script: string; image: string; voice: string };
+  // Deprecated/ignored: provider choices are account-level (Settings page) and
+  // snapshotted server-side at approve. Kept optional for backward-compat.
+  providers?: { script: string; image: string; voice: string };
   voice: VoiceConfigSpec;
   image_style: ImageStyleSpec;
 }
@@ -441,6 +443,36 @@ export interface ProvidersResponse {
 }
 export async function getProviders(): Promise<ProvidersResponse> {
   return request<ProvidersResponse>("/providers");
+}
+
+/** Account-level provider settings (Settings page) ----------------------- */
+export interface ProviderSettingsItem {
+  provider: string | null;
+  requires_key: boolean;
+  has_key: boolean;
+  ready: boolean;
+}
+export interface ProviderSettings {
+  script: ProviderSettingsItem;
+  image: ProviderSettingsItem;
+  voice: ProviderSettingsItem;
+  script_ready: boolean;
+  image_ready: boolean;
+  voice_ready: boolean;
+  options: ProvidersResponse;
+}
+/** Read the user's chosen providers + readiness + the per-task catalog. */
+export async function getProviderSettings(): Promise<ProviderSettings> {
+  return request<ProviderSettings>("/settings/providers");
+}
+/** Upsert the chosen providers (partial: omit a task to leave it unchanged). */
+export async function saveProviderSettings(
+  choices: { script?: string | null; image?: string | null; voice?: string | null },
+): Promise<ProviderSettings> {
+  return request<ProviderSettings>("/settings/providers", {
+    method: "PUT",
+    json: choices,
+  });
 }
 
 /** BYOK key storage ------------------------------------------------------- */

@@ -3,9 +3,9 @@
 // ===== Screen 3: Skill & Provider Setup (ported from screen-setup.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, TierBadge } from "@/components/ui";
-import { SKILLS, PROVIDERS, type Nav, type Route, type Skill, type SkillTemplate, type ProviderOptionData, type SeriesDraft } from "@/lib/data";
-import { getProviders, saveApiKey, uploadMusic, uploadVoiceSample, type ProvidersResponse } from "@/lib/api";
+import { Icon, Badge, Button, Card } from "@/components/ui";
+import { SKILLS, type Nav, type Route, type Skill, type SkillTemplate, type SeriesDraft } from "@/lib/data";
+import { uploadMusic } from "@/lib/api";
 
 const DENSITY_OPTIONS: { id: "light" | "standard" | "dense"; label: string }[] = [
   { id: "light", label: "Thưa (ít ảnh)" },
@@ -141,51 +141,6 @@ function TemplateRow({ tpl, active, onClick }: { tpl: SkillTemplate; active: boo
   );
 }
 
-function ProviderOption({ opt, active, onClick }: { opt: ProviderOptionData; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="card"
-      style={{
-        padding: 13,
-        textAlign: "left",
-        cursor: "pointer",
-        boxShadow: "none",
-        border: `2px solid ${active ? "var(--brand)" : "var(--border)"}`,
-        background: active ? "var(--brand-tint)" : "var(--surface)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 9,
-        minWidth: 0,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span
-          style={{
-            width: 18,
-            height: 18,
-            borderRadius: 999,
-            border: `2px solid ${active ? "var(--brand)" : "var(--border-strong)"}`,
-            background: active ? "var(--brand)" : "transparent",
-            flex: "none",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-          }}
-        >
-          {active && <Icon name="check" size={11} strokeWidth={3} />}
-        </span>
-        <span style={{ fontWeight: 700, fontSize: 14 }}>{opt.name}</span>
-        <span className="subtle" style={{ fontSize: 12, marginLeft: "auto" }}>
-          {opt.note}
-        </span>
-      </div>
-      <TierBadge cost_tier={opt.cost_tier} requires_key={opt.requires_key} />
-    </button>
-  );
-}
-
 export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   // Two modes: configuring a brand-new series (route.draft, from the wizard) or
   // re-editing an existing one (route.series). In create mode there is no series
@@ -196,18 +151,16 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   const headerName = series?.name || draft?.name || "Series mới";
 
   const initialSkill = series?.skill || draft?.skill || SKILLS[0].id;
-  const initialProviders =
-    series?.providers || draft?.providers || { script: "gemini", image: "web", voice: "edge" };
 
   const [skill, setSkill] = React.useState(initialSkill);
   const [tmpl, setTmpl] = React.useState(
     SKILLS.find((s) => s.id === initialSkill)!.templates[0].id,
   );
-  const [prov, setProv] = React.useState<{ [k: string]: string }>({ ...initialProviders });
-  const [keys, setKeys] = React.useState<{ [k: string]: string }>({});
-  const [savedKeys, setSavedKeys] = React.useState<{ [k: string]: boolean }>({});
 
-  // New series config fields (Setup screen — integration §6 / risks #9).
+  // New series config fields (Setup screen — integration §6 / risks #9). Provider
+  // + key selection moved to the account-level Settings page (Cấu hình AI); this
+  // screen is now series-only config: skill / language / length / density /
+  // aspect / music.
   const [language, setLanguage] = React.useState(draft?.language || "vi");
   const [targetMinutes, setTargetMinutes] = React.useState(draft?.target_minutes || 10);
   const [density, setDensity] = React.useState<"light" | "standard" | "dense">(
@@ -216,63 +169,12 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
   const [aspect, setAspect] = React.useState<"16:9" | "9:16">(draft?.aspect || "16:9");
   const [musicName, setMusicName] = React.useState<string>("");
 
-  // Voice-clone (OmniVoice) sample upload state — shown when voice = omnivoice.
-  const [sampleFile, setSampleFile] = React.useState<File | null>(null);
-  const [sampleTranscript, setSampleTranscript] = React.useState("");
-  const [sampleLang, setSampleLang] = React.useState("vi");
-  const [sampleStatus, setSampleStatus] = React.useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [sampleError, setSampleError] = React.useState<string>("");
-
-  // Live provider catalog from GET /providers (falls back to the static copy).
-  const [catalog, setCatalog] = React.useState<ProvidersResponse | null>(null);
-  React.useEffect(() => {
-    getProviders()
-      .then(setCatalog)
-      .catch(() => setCatalog(null)); // offline: keep static PROVIDERS
-  }, []);
-
-  const groupOptions = (g: string): ProviderOptionData[] => {
-    const live = catalog?.[g as keyof ProvidersResponse];
-    if (live && live.length) {
-      return live.map((o) => ({
-        id: o.id,
-        name: o.name,
-        cost_tier: o.cost_tier,
-        requires_key: o.requires_key,
-        key_help_url: o.key_help_url || undefined,
-        note: o.note || "",
-      }));
-    }
-    return PROVIDERS[g].options;
-  };
-
   const pickCategory = (id: string) => {
     setSkill(id);
     setTmpl(SKILLS.find((s) => s.id === id)!.templates[0].id);
   };
   const cat = SKILLS.find((s) => s.id === skill)!;
   const tplObj = cat.templates.find((t) => t.id === tmpl) || cat.templates[0];
-
-  // Providers needing a key among the current selection. requires_key is honoured
-  // for FREE providers too (e.g. Gemini free tier still needs a key); only the
-  // keyless Edge-TTS is exempt (integration risk #1).
-  const needKey = Object.keys(PROVIDERS)
-    .map((g) => {
-      const opt = groupOptions(g).find((o) => o.id === prov[g]);
-      return opt && opt.requires_key ? { g, opt } : null;
-    })
-    .filter(Boolean) as { g: string; opt: ProviderOptionData }[];
-
-  const onSaveKey = async (opt: ProviderOptionData) => {
-    const value = keys[opt.id];
-    if (!value) return;
-    try {
-      await saveApiKey(opt.id, value);
-      setSavedKeys((s) => ({ ...s, [opt.id]: true }));
-    } catch {
-      setSavedKeys((s) => ({ ...s, [opt.id]: false }));
-    }
-  };
 
   const onMusic = async (file: File | undefined) => {
     if (!file) return;
@@ -287,26 +189,9 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
     }
   };
 
-  const onSaveVoiceSample = async () => {
-    if (!sampleFile || !sampleTranscript.trim()) return;
-    if (!series) {
-      setSampleStatus("error");
-      setSampleError("Hãy lưu series trước rồi tải mẫu giọng (ở trang series).");
-      return;
-    }
-    setSampleStatus("saving");
-    setSampleError("");
-    try {
-      await uploadVoiceSample(series.id, sampleFile, sampleTranscript.trim(), sampleLang);
-      setSampleStatus("saved");
-    } catch (e) {
-      setSampleStatus("error");
-      setSampleError(e instanceof Error ? e.message : "Tải mẫu thất bại");
-    }
-  };
-
   // Accumulate the Setup slice into the draft handed forward to the Style screen,
-  // which runs the final approveSeries with outline + this config.
+  // which runs the final approveSeries with outline + this config. Providers are
+  // NOT carried here — they are snapshotted server-side from account settings.
   const buildNextDraft = (): SeriesDraft | undefined => {
     if (!draft) return undefined;
     return {
@@ -316,11 +201,6 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
       target_minutes: targetMinutes,
       density,
       aspect,
-      providers: {
-        script: prov.script,
-        image: prov.image,
-        voice: prov.voice,
-      },
     };
   };
 
@@ -337,10 +217,10 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
         </Badge>
       </div>
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22 }}>Skill &amp; Provider</h2>
+        <h2 style={{ fontSize: 22 }}>Cấu hình series</h2>
         <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>
-          Chọn template chủ đề và nhà cung cấp AI cho từng khâu. Bạn có thể dùng các dịch vụ miễn phí hoặc gắn API key
-          riêng (BYOK).
+          Chọn thể loại, skill và các thông số riêng cho series này. Nhà cung cấp AI dùng chung được
+          cấu hình ở trang Cấu hình AI.
         </p>
       </div>
 
@@ -468,229 +348,36 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
         </div>
       </Card>
 
-      {/* Providers */}
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
-        <Icon name="sliders-horizontal" size={18} style={{ color: "var(--brand)" }} />
-        <h3 style={{ fontSize: 16 }}>3. Chọn Provider cho từng khâu</h3>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 34 }}>
-        {Object.keys(PROVIDERS).map((g) => {
-          const group = PROVIDERS[g];
-          return (
-            <Card key={g} style={{ padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                <span
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 10,
-                    background: "var(--brand-tint)",
-                    color: "var(--brand)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Icon name={group.icon} size={18} />
-                </span>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>{group.label}</div>
-                  <div className="subtle" style={{ fontSize: 12.5 }}>
-                    Chọn 1 nhà cung cấp
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 10 }}>
-                {groupOptions(g).map((opt) => (
-                  <ProviderOption
-                    key={opt.id}
-                    opt={opt}
-                    active={prov[g] === opt.id}
-                    onClick={() => setProv((p) => ({ ...p, [g]: opt.id }))}
-                  />
-                ))}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* Voice clone (OmniVoice) — only when the chosen voice provider is omnivoice */}
-      {prov.voice === "omnivoice" && (
-        <Card style={{ padding: 16, marginBottom: 34, border: "2px solid var(--brand)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <span
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: "var(--brand-tint)",
-                color: "var(--brand)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Icon name="mic" size={18} />
-            </span>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>Clone giọng (OmniVoice)</div>
-              <div className="subtle" style={{ fontSize: 12.5 }}>
-                Tải lên một đoạn âm thanh mẫu (3–30 giây) + transcript của chính đoạn đó, rồi chọn ngôn ngữ.
-              </div>
+      {/* Provider + key selection is account-level now (Cấu hình AI). Point the
+          user there instead of choosing providers per series. */}
+      <Card style={{ padding: 16, marginBottom: 34, background: "var(--brand-tint)", border: "1px solid color-mix(in oklab, var(--brand) 22%, transparent)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 10,
+              background: "var(--surface)",
+              color: "var(--brand)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: "none",
+            }}
+          >
+            <Icon name="bot" size={18} />
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14.5 }}>Nhà cung cấp AI dùng chung tài khoản</div>
+            <div className="subtle" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+              Provider cho kịch bản, ảnh và giọng đọc được cấu hình một lần trong trang Cấu hình AI và áp
+              dụng cho mọi series.
             </div>
           </div>
-          <div style={{ display: "grid", gap: 14, marginTop: 8 }}>
-            <div>
-              <span className="label">Âm thanh mẫu</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <label className="btn btn-secondary btn-md" style={{ cursor: "pointer" }}>
-                  <Icon name="upload" size={15} /> Chọn file
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    style={{ display: "none" }}
-                    onChange={(e) => {
-                      setSampleFile(e.target.files?.[0] || null);
-                      setSampleStatus("idle");
-                    }}
-                  />
-                </label>
-                {sampleFile && (
-                  <span className="subtle" style={{ fontSize: 13 }}>
-                    {sampleFile.name}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div>
-              <span className="label">Transcript của đoạn mẫu</span>
-              <textarea
-                className="field"
-                rows={3}
-                placeholder="Nhập đúng lời thoại trong đoạn âm thanh mẫu…"
-                value={sampleTranscript}
-                onChange={(e) => {
-                  setSampleTranscript(e.target.value);
-                  setSampleStatus("idle");
-                }}
-                style={{ resize: "vertical", fontSize: 13.5 }}
-              />
-            </div>
-            <div style={{ maxWidth: 240 }}>
-              <span className="label">Ngôn ngữ giọng nói</span>
-              <select
-                className="field"
-                value={sampleLang}
-                onChange={(e) => setSampleLang(e.target.value)}
-              >
-                {LANGUAGE_OPTIONS.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <Button
-                variant="primary"
-                size="md"
-                icon="save"
-                onClick={onSaveVoiceSample}
-                disabled={!sampleFile || !sampleTranscript.trim() || sampleStatus === "saving"}
-              >
-                {sampleStatus === "saving" ? "Đang lưu…" : "Lưu giọng mẫu"}
-              </Button>
-              {sampleStatus === "saved" && (
-                <Badge tone="green" icon="check">
-                  Đã lưu giọng mẫu
-                </Badge>
-              )}
-              {sampleStatus === "error" && (
-                <span className="subtle" style={{ fontSize: 12.5, color: "var(--danger, #ef3e36)" }}>
-                  {sampleError}
-                </span>
-              )}
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* BYOK */}
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 14 }}>
-        <Icon name="key-round" size={18} style={{ color: "var(--brand)" }} />
-        <h3 style={{ fontSize: 16 }}>4. API Keys (BYOK)</h3>
-      </div>
-      <Card style={{ padding: 16 }}>
-        {needKey.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-2)", fontSize: 14 }}>
-            <Icon name="party-popper" size={18} style={{ color: "#16a34a" }} /> Lựa chọn hiện tại không cần API key
-            (ví dụ Edge-TTS) — sẵn sàng tạo!
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {needKey.map(({ g, opt }) => {
-              // claude-cli stores a Claude subscription OAuth token (from
-              // `claude setup-token`), not a metered API key — adjust the copy.
-              const isOauthToken = opt.id === "claude-cli";
-              return (
-              <div key={`${g}-${opt.id}`}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
-                  <span className="label" style={{ margin: 0 }}>
-                    {isOauthToken ? `${opt.name} — OAuth token` : opt.name}
-                  </span>
-                  <Badge tone="neutral">{PROVIDERS[g].label}</Badge>
-                  {opt.cost_tier === "free" && (
-                    <Badge tone="green" icon="gift">
-                      {isOauthToken ? "Dùng subscription của bạn" : "Free tier (vẫn cần key)"}
-                    </Badge>
-                  )}
-                  {savedKeys[opt.id] && (
-                    <Badge tone="green" icon="check">
-                      Đã lưu
-                    </Badge>
-                  )}
-                  {opt.key_help_url && (
-                    <a
-                      href={opt.key_help_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="subtle"
-                      style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4, marginLeft: "auto" }}
-                    >
-                      <Icon name="external-link" size={12} /> {isOauthToken ? "Hướng dẫn lấy token" : "Lấy key"}
-                    </a>
-                  )}
-                </div>
-                {isOauthToken && (
-                  <div className="subtle" style={{ fontSize: 12, marginBottom: 7, lineHeight: 1.5 }}>
-                    Đăng nhập tài khoản Claude của chính bạn rồi chạy{" "}
-                    <code style={{ fontSize: 12 }}>claude setup-token</code> để tạo OAuth token,
-                    dán vào đây. Reelo dùng token này gọi <code style={{ fontSize: 12 }}>claude</code> CLI bằng
-                    subscription của bạn — không phải API key trả theo token.
-                  </div>
-                )}
-                <div style={{ display: "flex", gap: 9 }}>
-                  <input
-                    className="field mono"
-                    type="password"
-                    placeholder={isOauthToken ? "sk-ant-oat01-•••••••••••••••" : "sk-•••••••••••••••••••••"}
-                    value={keys[opt.id] || ""}
-                    onChange={(e) => setKeys((k) => ({ ...k, [opt.id]: e.target.value }))}
-                    style={{ fontSize: 13 }}
-                  />
-                  <Button variant="secondary" size="md" icon="save" onClick={() => onSaveKey(opt)}>
-                    Lưu
-                  </Button>
-                </div>
-              </div>
-              );
-            })}
-            <div className="subtle" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 7 }}>
-              <Icon name="lock" size={13} /> Key được mã hóa (AES-256-GCM) và lưu theo tài khoản của bạn.
-            </div>
-          </div>
-        )}
+          <Button variant="secondary" size="sm" icon="arrow-right" onClick={() => nav({ name: "settings" })}>
+            Cấu hình AI
+          </Button>
+        </div>
       </Card>
 
       {/* sticky footer */}
@@ -710,8 +397,8 @@ export function SetupScreen({ nav, route }: { nav: Nav; route: Route }) {
           className="muted"
           style={{ fontSize: 13.5, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
         >
-          <b style={{ color: "var(--text)" }}>{tplObj.name}</b> · {cat.name} ·{" "}
-          {needKey.length === 0 ? "Miễn phí" : `${needKey.length} key cần thiết`}
+          <b style={{ color: "var(--text)" }}>{tplObj.name}</b> · {cat.name} · {targetMinutes} phút ·{" "}
+          {DENSITY_OPTIONS.find((d) => d.id === density)?.label}
         </div>
         {draft ? (
           // Create flow: the only forward path is Style, which runs approveSeries.

@@ -54,6 +54,31 @@ class User(Base, TimestampMixin):
     series: Mapped[list["Series"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
+class UserSettings(Base, TimestampMixin):
+    """Account-level configuration, one row per user (1:1 with ``users``).
+
+    Holds the user's chosen AI providers for the three generation tasks
+    (script / image / voice). These are configured ONCE in the Settings screen
+    and shared across every series the user creates (decision: account-level, a
+    single provider set per task). ``settings`` is a JSONB blob so new
+    account-level preferences can be added without further migrations; the
+    canonical shape today is::
+
+        {"providers": {"script": <id|null>, "image": <id|null>, "voice": <id>}}
+
+    Defaults when a user has never configured anything: ``script=None``,
+    ``image=None``, ``voice="edge"`` (free, keyless) — see
+    :func:`db.repository.UserSettingsRepo.default_providers`.
+    """
+
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class Series(Base, TimestampMixin):
     __tablename__ = "series"
 
@@ -164,6 +189,7 @@ __all__ = [
     "Base",
     "TimestampMixin",
     "User",
+    "UserSettings",
     "Series",
     "Episode",
     "GenJobRow",

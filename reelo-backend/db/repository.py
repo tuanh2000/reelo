@@ -13,7 +13,13 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import ApiKey, Episode, GenJobRow, Series, UsageLog, User
+from db.models import ApiKey, Episode, GenJobRow, Series, UsageLog, User, UserSettings
+
+# Default account-level providers when a user has never configured anything.
+# script/image stay unset (None) so the UI gate forces the user to choose one;
+# voice defaults to the free keyless Edge-TTS so a brand-new account can at least
+# produce voice without configuration.
+DEFAULT_PROVIDERS: dict[str, str | None] = {"script": None, "image": None, "voice": "edge"}
 
 
 class UserRepo:
@@ -42,6 +48,56 @@ class UserRepo:
             user.picture = picture
         await self.s.flush()
         return user
+
+
+class UserSettingsRepo:
+    """Account-level settings (provider choices), one row per user.
+
+    ``get_providers`` always returns a complete ``{script, image, voice}`` dict,
+    merging the user's saved choices over :data:`DEFAULT_PROVIDERS` so callers
+    never have to special-case a missing row. ``set_providers`` upserts only the
+    keys supplied (partial update), leaving the others intact.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.s = session
+
+    @staticmethod
+    def default_providers() -> dict[str, str | None]:
+        return dict(DEFAULT_PROVIDERS)
+
+    async def get(self, user_id: str) -> UserSettings | None:
+        return await self.s.get(UserSettings, user_id)
+
+    async def get_providers(self, user_id: str) -> dict[str, str | None]:
+        """Return the full provider triple (saved choices over defaults)."""
+        row = await self.get(user_id)
+        merged = dict(DEFAULT_PROVIDERS)
+        if row is not None:
+            saved = (row.settings or {}).get("providers") or {}
+            for task in ("script", "image", "voice"):
+                if task in saved:
+                    merged[task] = saved[task]
+        return merged
+
+    async def set_providers(
+        self, user_id: str, providers: dict[str, str | None]
+    ) -> dict[str, str | None]:
+        """Upsert the supplied provider keys; returns the merged triple."""
+        row = await self.get(user_id)
+        if row is None:
+            row = UserSettings(user_id=user_id, settings={"providers": {}})
+            self.s.add(row)
+        settings = dict(row.settings or {})
+        current = dict(settings.get("providers") or {})
+        for task, value in providers.items():
+            current[task] = value
+        settings["providers"] = current
+        row.settings = settings
+        await self.s.flush()
+        merged = dict(DEFAULT_PROVIDERS)
+        merged.update({k: v for k, v in current.items() if k in merged})
+        return merged
 
 
 class SeriesRepo:
@@ -262,6 +318,8 @@ class UsageRepo:
 
 __all__ = [
     "UserRepo",
+    "UserSettingsRepo",
+    "DEFAULT_PROVIDERS",
     "SeriesRepo",
     "EpisodeRepo",
     "GenJobRepo",

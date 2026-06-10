@@ -17,6 +17,7 @@ import { WorkspaceScreen } from "@/screens/workspace";
 import { ImageSelectScreen } from "@/screens/image-select";
 import { ReviewScreen } from "@/screens/review";
 import { ProjectScreen } from "@/screens/project";
+import { SettingsScreen } from "@/screens/settings";
 import type { Nav, Route } from "@/lib/data";
 import { getMe, loginUrl, logout, type Me } from "@/lib/api";
 
@@ -92,6 +93,7 @@ const SCREENS: Record<Route["name"], React.ComponentType<{ nav: Nav; route: Rout
   "image-select": ImageSelectScreen,
   review: ReviewScreen,
   project: ProjectScreen,
+  settings: SettingsScreen,
 };
 
 export function App() {

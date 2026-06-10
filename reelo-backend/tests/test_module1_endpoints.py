@@ -183,6 +183,71 @@ def test_wizard_approve_persists_shell(m1_client):
     assert series["series_id"] in m1_client.store.series  # type: ignore[attr-defined]
 
 
+def test_wizard_approve_snapshots_account_providers(m1_client, monkeypatch):
+    """Providers come from account settings, NOT the request config."""
+    import web.routers.wizard as wizard_router
+
+    async def fake_account(db, user_id):
+        return {"script": "claude", "image": "kie", "voice": "eleven"}
+
+    monkeypatch.setattr(wizard_router, "_account_providers", fake_account)
+
+    body = _config_body()
+    # Request providers are deliberately bogus; they must be ignored.
+    body["providers"] = {"script": "BOGUS", "image": "BOGUS", "voice": "BOGUS"}
+    resp = m1_client.post(
+        "/wizard/approve",
+        json={
+            "name": "Faiths",
+            "topic": "religion",
+            "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
+            "config": body,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    providers = resp.json()["series"]["providers"]
+    assert providers == {"script": "claude", "image": "kie", "voice": "eleven"}
+
+
+def test_wizard_approve_409_in_prod_when_unconfigured(m1_client, monkeypatch):
+    """Prod with no account script/image provider → 409 (UI gate)."""
+    import web.routers.wizard as wizard_router
+    from config import get_settings
+
+    async def empty(db, user_id):
+        return {"script": None, "image": None, "voice": "edge"}
+
+    monkeypatch.setattr(wizard_router, "_account_providers", empty)
+    monkeypatch.setattr(get_settings(), "env", "prod")  # is_prod -> True
+
+    resp = m1_client.post(
+        "/wizard/approve",
+        json={
+            "name": "Faiths",
+            "topic": "religion",
+            "outline": [{"id": "w1", "title": "Origins", "desc": "", "pick": True}],
+            "config": _config_body(),
+        },
+    )
+    assert resp.status_code == 409
+
+
+def test_wizard_message_409_in_prod_when_no_script_provider(m1_client, monkeypatch):
+    import web.routers.wizard as wizard_router
+    from config import get_settings
+
+    async def empty(db, user_id):
+        return {"script": None, "image": None, "voice": "edge"}
+
+    monkeypatch.setattr(wizard_router, "_account_providers", empty)
+    monkeypatch.setattr(get_settings(), "env", "prod")
+
+    resp = m1_client.post(
+        "/wizard/message", json={"idea": "ancient religions", "history": []}
+    )
+    assert resp.status_code == 409
+
+
 # --------------------------------------------------------------------------- #
 # /series CRUD                                                                 #
 # --------------------------------------------------------------------------- #

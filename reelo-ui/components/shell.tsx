@@ -73,7 +73,8 @@ export function Sidebar({ route, nav }: { route: Route; nav: Nav }) {
       <NavItem icon="youtube" label="Duyệt & Xuất bản" active={n === "review"} onClick={() => nav({ name: "review", series: route.series || SERIES[0] })} />
 
       <div className="side-section">Cấu hình</div>
-      <NavItem icon="sliders-horizontal" label="Skill & Provider" active={n === "setup"} onClick={() => nav({ name: "setup", series: route.series || SERIES[0] })} />
+      <NavItem icon="bot" label="Cấu hình AI" active={n === "settings"} onClick={() => nav({ name: "settings" })} />
+      <NavItem icon="sliders-horizontal" label="Cấu hình series" active={n === "setup"} onClick={() => nav({ name: "setup", series: route.series || SERIES[0] })} />
       <NavItem icon="palette" label="Style Studio" active={n === "style"} onClick={() => nav({ name: "style", series: route.series || SERIES[0] })} />
       <NavItem icon="library" label="Video đã xuất bản" disabled badge="Sắp có" />
 
@@ -96,7 +97,7 @@ export function Sidebar({ route, nav }: { route: Route; nav: Nav }) {
         <Progress value={60} height={6} />
       </div>
 
-      <NavItem icon="settings" label="Cài đặt" disabled />
+      <NavItem icon="settings" label="Cấu hình AI" active={n === "settings"} onClick={() => nav({ name: "settings" })} />
     </aside>
   );
 }
@@ -104,11 +105,12 @@ export function Sidebar({ route, nav }: { route: Route; nav: Nav }) {
 const CRUMBS: Record<string, { t: string; b?: boolean }[]> = {
   dashboard: [{ t: "Bảng điều khiển", b: true }],
   wizard: [{ t: "Trợ lý tạo series", b: true }],
-  setup: [{ t: "Skill & Provider", b: true }],
+  setup: [{ t: "Cấu hình series", b: true }],
   style: [{ t: "Style Studio", b: true }],
   workspace: [{ t: "Xưởng kịch bản", b: true }],
   review: [{ t: "Duyệt & Xuất bản", b: true }],
   project: [{ t: "Chi tiết series", b: true }],
+  settings: [{ t: "Cấu hình AI", b: true }],
 };
 
 export function Topbar({

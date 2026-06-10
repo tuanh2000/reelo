@@ -11,16 +11,11 @@ from fastapi import APIRouter
 
 from clients.base import Task
 from clients.registry import get_registry
+from web._provider_keys import TASK_TO_FIELD as _TASK_TO_FIELD
 from web.deps import CurrentUser
 from web.schemas import ProviderOption, ProvidersResponse
 
 router = APIRouter(prefix="/providers", tags=["providers"])
-
-_TASK_TO_FIELD = {
-    Task.WRITE_SCRIPT: "script",
-    Task.GENERATE_IMAGE: "image",
-    Task.GENERATE_VOICE: "voice",
-}
 
 
 # Per-provider UI hints (note) the YAML does not carry as a field.
@@ -46,9 +41,12 @@ def _provider_option(provider_id: str, raw: dict) -> ProviderOption:
     )
 
 
-@router.get("", response_model=ProvidersResponse)
-async def list_providers(user_id: CurrentUser) -> ProvidersResponse:
-    """Derive provider options per task from services.yaml (stubs hidden)."""
+def build_provider_catalog() -> ProvidersResponse:
+    """Derive provider options per task from services.yaml (stubs hidden).
+
+    Shared by ``GET /providers`` and ``GET /settings/providers`` so both render
+    identical dropdowns from one source.
+    """
     registry = get_registry()
     grouped: dict[str, list[ProviderOption]] = {"script": [], "image": [], "voice": []}
     for provider_id, raw in registry.services_raw.items():
@@ -65,3 +63,9 @@ async def list_providers(user_id: CurrentUser) -> ProvidersResponse:
     return ProvidersResponse(
         script=grouped["script"], image=grouped["image"], voice=grouped["voice"]
     )
+
+
+@router.get("", response_model=ProvidersResponse)
+async def list_providers(user_id: CurrentUser) -> ProvidersResponse:
+    """Derive provider options per task from services.yaml (stubs hidden)."""
+    return build_provider_catalog()

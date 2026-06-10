@@ -115,7 +115,8 @@ export interface Route {
     | "workspace"
     | "image-select"
     | "review"
-    | "project";
+    | "project"
+    | "settings";
   series?: Series;
   episode?: Episode;
   // Carries the in-progress create-series state through the wizard flow.

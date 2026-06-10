@@ -58,14 +58,19 @@ class WizardMessageResponse(BaseModel):
 
 
 class SeriesConfig(BaseModel):
-    """Setup-screen config carried into approve (Module 1 §6)."""
+    """Setup-screen config carried into approve (Module 1 §6).
+
+    ``providers`` is deprecated/ignored: provider choices are account-level
+    (Settings page) and snapshotted server-side at approve. It is kept optional
+    for backward compatibility with older clients but no longer read.
+    """
 
     skill: Skill
     language: str
     target_minutes: float = 10
     density: Density = "standard"
     aspect: Literal["16:9", "9:16"] = "16:9"
-    providers: dict[str, str]  # {script, image, voice}
+    providers: dict[str, str] | None = None  # deprecated; ignored (account-level)
     voice: VoiceConfig
     image_style: ImageStyle
 
@@ -269,6 +274,52 @@ class ProvidersResponse(BaseModel):
     script: list[ProviderOption] = Field(default_factory=list)
     image: list[ProviderOption] = Field(default_factory=list)
     voice: list[ProviderOption] = Field(default_factory=list)
+
+
+class ProviderSettingsItem(BaseModel):
+    """A single task's account-level provider choice + readiness (Settings page).
+
+    ``provider`` is the chosen provider id (``None`` when the user has not picked
+    one yet). ``requires_key`` / ``has_key`` mirror the key state for that
+    provider; ``ready`` is the gate the UI uses = a provider is chosen AND
+    (it needs no key OR a key is present).
+    """
+
+    provider: str | None = None
+    requires_key: bool = False
+    has_key: bool = False
+    ready: bool = False
+
+
+class ProviderSettingsResponse(BaseModel):
+    """``GET /settings/providers`` — chosen providers, readiness, and catalog.
+
+    ``options`` is the same per-task catalog as ``GET /providers`` so the
+    Settings page can render dropdowns without a second call.
+    """
+
+    script: ProviderSettingsItem
+    image: ProviderSettingsItem
+    voice: ProviderSettingsItem
+    script_ready: bool = False
+    image_ready: bool = False
+    voice_ready: bool = False
+    options: ProvidersResponse
+
+
+class SaveProviderSettingsRequest(BaseModel):
+    """``PUT /settings/providers`` — partial update of the chosen providers.
+
+    Each field is optional: only the supplied tasks are updated. A provider id
+    must be valid for its task (validated server-side); ``None`` is allowed to
+    clear a choice.
+    """
+
+    script: str | None = None
+    image: str | None = None
+    voice: str | None = None
+
+    model_config = {"extra": "ignore"}
 
 
 class SaveKeyRequest(BaseModel):
