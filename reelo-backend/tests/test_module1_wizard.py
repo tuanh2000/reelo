@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+
+from clients.base import AIClient, CallContext, ScriptRequest, ScriptResult, ServiceConfig, Task
+from clients.registry import ServiceRegistry
+from keystore import Cipher, KeyStore
 from models.spec import ImageStyle, VoiceConfig
 from module1.wizard import (
     build_messages,
     build_series_spec,
     parse_outline_preview,
+    run_phase_a,
 )
+from usage import UsageLogger
 
 
 # --- Phase A helpers -------------------------------------------------------
@@ -63,6 +70,63 @@ def test_parse_outline_unclosed_block_still_parses():
     reply = "<<<OUTLINE>>>\n1 | Title | desc"  # no closing marker
     out = parse_outline_preview(reply)
     assert out and out[0].title == "Title"
+
+
+# --- Phase A run (topic-agnostic) -----------------------------------------
+class _CapturingClient(AIClient):
+    """Records the system prompt and echoes the latest user turn back."""
+
+    capabilities = {Task.WRITE_SCRIPT}
+    cost_tier = "free"
+    requires_key = False
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.last_system: str | None = None
+
+    async def is_available(self, ctx):
+        return True
+
+    async def write_script(self, req: ScriptRequest, ctx) -> ScriptResult:
+        self.last_system = req.system
+        last = req.messages[-1]["content"] if req.messages else ""
+        return ScriptResult(text=f"echo: {last}")
+
+
+def _registry_with_capture() -> ServiceRegistry:
+    reg = ServiceRegistry.__new__(ServiceRegistry)
+    reg._raw = {}
+    reg._fallback = {}
+    cfg = ServiceConfig(provider_id="cap", raw={"auth": {"type": "none"}})
+    reg._clients = {"cap": _CapturingClient(cfg)}
+    return reg
+
+
+def _ctx() -> CallContext:
+    return CallContext(user_id="u1", keys=KeyStore(Cipher(b"k" * 32)), usage=UsageLogger())
+
+
+@pytest.mark.parametrize("skill", ["explain", "religion", "story", "news"])
+async def test_run_phase_a_is_topic_agnostic_regardless_of_skill(skill):
+    """Phase A never refuses a topic and never leaks a skill's content gate —
+    the user's "endangered animals" request must be accepted for ANY skill."""
+    reg = _registry_with_capture()
+    client = reg._clients["cap"]
+    result = await run_phase_a(
+        "a video series about endangered animals",
+        [],
+        skill=skill,
+        provider="cap",
+        ctx=_ctx(),
+        registry=reg,
+    )
+    assert result.reply  # got a reply, no refusal
+    sys = client.last_system or ""
+    assert "ANY topic" in sys
+    assert "Never refuse" in sys
+    # The religion skill's scholarly gate must never reach the chat system prompt.
+    assert "three-layer method" not in sys
+    assert "ALREADY a believer" not in sys
 
 
 # --- Phase B approve (no AI) ----------------------------------------------

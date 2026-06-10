@@ -193,6 +193,57 @@ async def test_provider_unavailable_bubbles_not_counted_as_parse_retry():
         )
 
 
+def _explain_series(target=5, density="standard") -> SeriesSpec:
+    """A general-topic series using the explain skill (no religion)."""
+    return SeriesSpec(
+        series_id="s2", name="Vanishing Wild", topic="endangered animals", skill="explain",
+        language="en", target_minutes=target, density=density,
+        providers={"script": "fake", "image": "web", "voice": "edge"},
+        image_style=ImageStyle(preset_id="documentary", base_prompt="b"),
+        voice=VoiceConfig(provider="edge", voice_id="v"),
+        episodes=[
+            EpisodeSpec(
+                episode_id="e1", title="The Vaquita", order=1,
+                desc="the world's rarest marine mammal",
+            )
+        ],
+    )
+
+
+class CapturingClient(FakeSegmentClient):
+    """Records the system prompts it is asked to write against (no refusal)."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.systems: list[str] = []
+
+    async def write_script(self, req: ScriptRequest, ctx) -> ScriptResult:
+        self.systems.append(req.system or "")
+        return await super().write_script(req, ctx)
+
+
+async def test_general_topic_explain_skill_generates_without_refusal():
+    """A non-religious topic (endangered animals) with the explain skill produces
+    a full script. The chunk system prompt carries the explainer style and the
+    general topic — and never the religion content gate."""
+    series = _explain_series(target=5, density="standard")  # → 9 segments
+    reg = _registry_with(CapturingClient)
+    client = reg._clients["fake"]
+    out = await generate_episode_script(series, series.episodes[0], _ctx(), registry=reg)
+
+    assert out.status == "scripted"
+    assert len(out.segments) == 9
+    # The chunk system prompt is the explainer style applied to this topic — and
+    # contains no genre restriction / religion rule.
+    script_systems = [s for s in client.systems if "scriptwriter" in s]
+    assert script_systems
+    sys = script_systems[0]
+    assert "Explainer" in sys
+    assert "NO subject restriction" in sys
+    assert "three-layer method" not in sys
+    assert "ALREADY a believer" not in sys
+
+
 def test_reindex_renumbers_and_dedupes_labels():
     from models.spec import SegmentSpec
 

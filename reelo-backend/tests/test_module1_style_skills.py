@@ -24,11 +24,38 @@ def test_religion_template_is_complete():
 
 
 @pytest.mark.parametrize("skill", ["story", "explain", "news"])
-def test_scaffold_templates_load(skill):
+def test_general_skill_templates_are_real_and_topic_agnostic(skill):
+    """explain/story/news are real, general-purpose writing styles (no TODO
+    placeholders, no genre restriction, no per-tradition image layers)."""
     t = load_skill_template(skill)
-    assert t.script.structure  # has a placeholder structure
+    assert t.script.structure
     assert t.script.word_ratios
+    # word_ratios sum to ~1.0 (a sane distribution).
+    assert abs(sum(t.script.word_ratios.values()) - 1.0) < 0.01
     assert t.image.recommended_preset
+    # Real guidance, not a scaffold placeholder.
+    extra = t.script.rule_prompt_extra
+    assert extra and "TODO" not in extra
+    # Topic-agnostic: usable for ANY subject (e.g. endangered animals).
+    assert "ANY" in extra or "any" in extra
+    assert "NO subject restriction" in extra
+    # General skills do not gate on a religious tradition.
+    assert t.image.style_layers == {}
+    assert t.style_layer_for("islam") is None
+
+
+def test_explain_structure_is_explainer_shaped():
+    t = load_skill_template("explain")
+    assert t.script.structure[0] == "hook"
+    assert "key_points" in t.script.structure
+    assert t.script.structure[-1] == "closing"
+
+
+def test_religion_skill_unchanged_and_still_scholarly():
+    """Religion stays specialised: scholarly rule + per-tradition image layers."""
+    t = load_skill_template("religion")
+    assert "three-layer method" in t.script.rule_prompt_extra
+    assert t.style_layer_for("islam") and "Muhammad" in t.style_layer_for("islam")
 
 
 def test_unknown_skill_raises():

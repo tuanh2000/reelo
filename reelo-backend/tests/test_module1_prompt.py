@@ -110,13 +110,21 @@ def _series() -> SeriesSpec:
     )
 
 
-def test_phase_a_system_includes_language_outline_and_rule_extra():
-    tmpl = load_skill_template("religion")
-    sys = build_phase_a_system(tmpl, "Tieng Viet")
+def test_phase_a_system_is_topic_agnostic():
+    """Phase A is a GENERAL video-planning assistant: language + outline format +
+    clarifying-question behaviour, and explicitly NO genre restriction and NO
+    skill rule_prompt_extra leaking into the chat (§4)."""
+    sys = build_phase_a_system("Tieng Viet")
     assert "Tieng Viet" in sys
     assert "<<<OUTLINE>>>" in sys
     assert "ASK a brief clarifying question" in sys
-    assert "three-layer method" in sys  # rule_prompt_extra appended
+    assert "ANY topic" in sys
+    assert "Never refuse" in sys
+    # The religion skill's content gate must NOT be present in the chat prompt.
+    rel = load_skill_template("religion")
+    assert rel.script.rule_prompt_extra not in sys
+    assert "three-layer method" not in sys
+    assert "ALREADY a believer" not in sys
 
 
 def test_chunk_system_states_language_and_english_images():

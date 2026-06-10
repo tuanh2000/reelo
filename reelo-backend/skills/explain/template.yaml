@@ -1,34 +1,75 @@
-# Explainer skill — SCAFFOLD. Owned by Module 1.
-# TODO(module1): refine structure/ratios/rule_prompt_extra after the religion
-# reference proves out.
+# Explainer skill — general-purpose. Owned by Module 1 (reelo-scriptwriting).
+# TOPIC-AGNOSTIC: works for ANY subject (science, animals, technology, economics,
+# history, …). The skill decides the *writing style* (structure + narration
+# rules) applied at script generation; it is never a content gate. The chat
+# (Phase A) is topic-agnostic and does not use this rule_prompt_extra.
+#
+# Consumed by:
+#   Module 1 — script.structure + word_ratios (chunk planning, §8),
+#              script.rule_prompt_extra (appended to the chunk system prompt, §9),
+#              voice.* → VoiceConfig defaults.
+#   Module 2 — image.recommended_preset / default_aspect for the visual look.
 
 id: explain
 display_name: "Explainer"
 
 script:
-  # Placeholder explainer flow; tune against real episodes.
+  # Classic explainer flow: hook → context → the key points → why it matters.
   structure:
     - hook
-    - question
-    - explanation
-    - example
-    - takeaway
+    - context
+    - key_points
+    - significance
+    - closing
   word_ratios:
     hook: 0.10
-    question: 0.15
-    explanation: 0.45
-    example: 0.20
-    takeaway: 0.10
+    context: 0.18
+    key_points: 0.50
+    significance: 0.12
+    closing: 0.10
   rule_prompt_extra: |
-    TODO(module1): explainer guidance. Open with a relatable question, build one
-    idea at a time from first principles, use a concrete example or analogy, and
-    end with a crisp takeaway. Define jargon on first use; favour clarity.
+    You write clear, accurate, engaging explainer narration for a general
+    audience on ANY topic (science, nature, animals, technology, economics,
+    history, culture, and so on). There is NO subject restriction — explain
+    whatever the episode is about, plainly and faithfully.
+
+    Structure the episode:
+    - hook: open with a concrete, surprising fact, image, or question that makes
+      the viewer want to know more. Never open with "Today we're going to talk
+      about...".
+    - context: give just enough background so the rest makes sense — what this is,
+      where/when, and why it's worth a few minutes of attention.
+    - key_points: explain the main ideas one at a time, building from simple to
+      more involved. Define any jargon the first time it appears. Use a concrete
+      example, comparison, or number to make each point land.
+    - significance: connect it back to the bigger picture — why it matters, what's
+      at stake, or what changed because of it.
+    - closing: a short, memorable wrap-up; optionally a question or thought to
+      leave the viewer with.
+
+    Style rules: write for the EAR — short, plain sentences, no markdown, no stage
+    directions, no headings inside the narration. Be accurate; prefer specifics
+    (named species, places, dates, figures) over vague generalities. When you
+    state a fact that depends on a source (a study, a statistic, an organization
+    like the IUCN, WWF, NASA, etc.), attribute it naturally in the narration
+    ("according to ...") when you can; if unsure of an exact number or name, speak
+    in honest, careful terms rather than inventing detail.
+
+    Image prompts (always English): describe a concrete, real scene for THIS point
+    — name the specific subject, action, setting, and mood — never "a generic
+    illustration". For factual topics prefer realistic, documentary-style scenes
+    that a real photo or stock clip could match.
 
 image:
-  recommended_preset: "minimal"
+  # The preset owns the visual look; the explainer style stays visually neutral so
+  # it suits any subject (a clean documentary look by default).
+  recommended_preset: "documentary"
   default_aspect: "16:9"
-  style_layers: {}  # TODO(module1)
+  style_layers: {}  # intentionally empty — preset handles the visual style.
 
 voice:
-  default_voice_id: null  # TODO(module1)
-  settings: {}
+  # Keep null so keyless Edge-TTS resolves a clear, language-appropriate default
+  # (e.g. en-US-AndrewNeural / vi-VN-HoaiMyNeural); no paid voice is assumed.
+  default_voice_id: null
+  settings:
+    speed: 1.0

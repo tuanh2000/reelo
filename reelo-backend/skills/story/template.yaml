@@ -1,13 +1,20 @@
-# Story / storytelling skill — SCAFFOLD. Owned by Module 1.
-# TODO(module1): refine the structure, word_ratios, and rule_prompt_extra after
-# the religion reference proves out; add tradition-equivalent style_layers if a
-# narrative sub-genre needs a distinct visual context.
+# Storytelling skill — general-purpose. Owned by Module 1 (reelo-scriptwriting).
+# TOPIC-AGNOSTIC: narrates ANY subject as a compelling story (a person, an event,
+# a place, an animal, a discovery, a mystery). The skill decides the *writing
+# style* applied at script generation; it is never a content gate. The chat
+# (Phase A) is topic-agnostic and does not use this rule_prompt_extra.
+#
+# Consumed by:
+#   Module 1 — script.structure + word_ratios (chunk planning, §8),
+#              script.rule_prompt_extra (appended to the chunk system prompt, §9),
+#              voice.* → VoiceConfig defaults.
+#   Module 2 — image.recommended_preset / default_aspect for the visual look.
 
 id: story
 display_name: "Storytelling"
 
 script:
-  # Placeholder narrative arc; tune ratios against real episodes.
+  # Narrative arc: gripping open → setup → rising action → climax → resolution.
   structure:
     - hook
     - setup
@@ -21,15 +28,44 @@ script:
     climax: 0.20
     resolution: 0.15
   rule_prompt_extra: |
-    TODO(module1): dramatic storytelling guidance. Strong cold-open hook, vivid
-    sensory scene-setting, escalating stakes, a clear turn at the climax, and a
-    resolution that lands the theme. Write for the ear; keep momentum.
+    You write vivid, emotionally engaging storytelling narration for a general
+    audience on ANY subject — a person, an event, a place, an animal, a discovery,
+    a mystery. There is NO subject restriction; tell whatever story the episode is
+    about.
+
+    Build the narrative arc:
+    - hook: a strong cold open — drop the viewer into a charged moment, an
+      arresting image, or an unanswered question. Make them need to keep watching.
+    - setup: establish who/what/where and what's at stake, with vivid sensory
+      detail so the world feels real.
+    - rising_action: escalate — complications, tension, and turning points that
+      raise the stakes step by step.
+    - climax: the decisive moment the whole episode has been building toward; land
+      it clearly and with feeling.
+    - resolution: show the aftermath and what it means; close on a note (hopeful,
+      poignant, or thought-provoking) that lands the theme.
+
+    Style rules: write for the EAR — short, momentum-driven sentences, no markdown,
+    no stage directions. A warm, narrative voice is welcome; emotion, suspense, and
+    even gentle anthropomorphizing of a subject (an animal, a place) are fine in
+    service of the story. Keep it grounded — when the story rests on real facts
+    (dates, names, what actually happened), stay faithful to them; dramatize the
+    telling, not the facts.
+
+    Image prompts (always English): paint a concrete cinematic scene for THIS beat
+    — subject, action, setting, light, and mood — never "a dramatic scene". Match
+    the emotional tone of the moment.
 
 image:
+  # The preset owns the visual look; a cinematic look suits dramatic narration
+  # across any subject.
   recommended_preset: "cinematic"
   default_aspect: "16:9"
-  style_layers: {}  # TODO(module1): add per-genre layers if needed.
+  style_layers: {}  # intentionally empty — preset handles the visual style.
 
 voice:
-  default_voice_id: null  # TODO(module1): pick a default storyteller voice.
-  settings: {}
+  # Keep null so keyless Edge-TTS resolves a warm, language-appropriate default;
+  # no paid voice is assumed.
+  default_voice_id: null
+  settings:
+    speed: 0.96

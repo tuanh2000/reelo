@@ -204,15 +204,28 @@ def youtube_json_schema() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Phase A — refine system prompt (§4)                                         #
 # --------------------------------------------------------------------------- #
-def build_phase_a_system(skill: SkillTemplate, language: str) -> str:
-    """System prompt for the wizard refine chat (§4): propose outline, ask back."""
+def build_phase_a_system(language: str) -> str:
+    """System prompt for the wizard refine chat (§4): propose outline, ask back.
+
+    TOPIC-AGNOSTIC by design (§4): Reelo is a general-purpose video tool, so this
+    prompt is a neutral brainstorming assistant for ANY subject (animals, science,
+    history, technology, storytelling, …). It must NEVER restrict or refuse a topic
+    by genre. The chosen skill's ``rule_prompt_extra`` is a *writing style* and is
+    applied only at script generation (``episode_script.py`` / ``build_chunk_system``),
+    never here — so the chat does not gate content.
+    """
     lines = [
-        f"You are an assistant that helps build a '{skill.display_name}' video series, "
-        f"speaking in {language}.",
-        "The user gives an idea. Propose an outline of episodes (each: a title + a short "
-        "description).",
+        f"You are a helpful assistant that helps users plan a YouTube video series on "
+        f"ANY topic, speaking in {language}.",
+        "Help the user shape an engaging idea and propose an outline of episodes (each: a "
+        "title + a short description). Work with whatever subject the user brings — animals, "
+        "science, history, technology, culture, storytelling, news, and so on. Never refuse "
+        "or restrict a topic by genre; you are a general video brainstorming assistant.",
         "If the idea is missing important information (audience, angle, desired depth or "
         "length), ASK a brief clarifying question BEFORE committing to an outline.",
+        "Keep the proposed episodes engaging and well-structured (a clear hook, a logical "
+        "progression, a satisfying close). The detailed writing style is chosen later at "
+        "setup, so here just focus on a strong outline.",
         "Reply in natural prose. AFTER your reply, if you have a concrete outline, append a "
         "lightweight block the UI can parse, exactly in this form:",
         "<<<OUTLINE>>>",
@@ -221,9 +234,6 @@ def build_phase_a_system(skill: SkillTemplate, language: str) -> str:
         "<<<END_OUTLINE>>>",
         "Only include the block when you actually have episodes to propose; otherwise omit it.",
     ]
-    if skill.script.rule_prompt_extra:
-        lines.append("")
-        lines.append(skill.script.rule_prompt_extra)
     return "\n".join(lines)
 
 

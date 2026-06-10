@@ -86,9 +86,10 @@ Vì **chỉ lưu khi approve** (D9), wizard **stateless** ở backend:
 Map: `sendWizardMessage(topic, history) -> {reply, outline?}` ([reelo-ui/lib/api.ts](../reelo-ui/lib/api.ts), [wizard.tsx](../reelo-ui/screens/wizard.tsx)).
 
 **Hành vi:**
+- Pha A là **TOPIC-AGNOSTIC**: Reelo là công cụ video TỔNG QUÁT, trợ lý chat giúp lên ý tưởng + outline cho **bất kỳ chủ đề nào** (động vật, khoa học, lịch sử, công nghệ, kể chuyện, tin tức…). **KHÔNG ràng buộc/từ chối theo thể loại.** Skill **không** can thiệp vào chat — skill chỉ là *văn phong* áp ở bước sinh script (mục 9), KHÔNG phải cổng chặn nội dung. Vì vậy `skill.script.rule_prompt_extra` **KHÔNG** được nhét vào system prompt Pha A.
 - User gõ **1 ý tưởng tự do** (D11). AI đề xuất outline (danh sách tập). Nếu thiếu thông tin để dựng series tốt (đối tượng khán giả, góc độ, độ sâu…), **AI chủ động hỏi lại trong hội thoại** — prompt Pha A khuyến khích điều này.
-- User tinh chỉnh bằng chat ("thêm 1 tập về X", "học thuật hơn", "gộp 2 tập cuối") **và/hoặc** sửa trực tiếp outline trên UI (rename/add/delete/reorder/toggle pick).
-- History gửi dạng `messages[]` mỗi turn (không `conversation_id`); chỉ dẫn (skill, ngôn ngữ, yêu cầu chủ động hỏi lại) đặt ở **system prompt**.
+- User tinh chỉnh bằng chat ("thêm 1 tập về X", "kịch tính hơn", "gộp 2 tập cuối") **và/hoặc** sửa trực tiếp outline trên UI (rename/add/delete/reorder/toggle pick).
+- History gửi dạng `messages[]` mỗi turn (không `conversation_id`); chỉ dẫn (ngôn ngữ, format outline, yêu cầu chủ động hỏi lại) đặt ở **system prompt**. **Không** truyền skill vào Pha A.
 
 **Outline preview (`OutlineItem[]`):** AI trả prose tự nhiên **kèm** block nhẹ ở cuối để UI parse. **Parse fail KHÔNG fatal** — không thấy block thì chỉ hiện `reply`, giữ outline cũ. Chat phải mượt, không vỡ vì format.
 
@@ -100,17 +101,18 @@ Map: `sendWizardMessage(topic, history) -> {reply, outline?}` ([reelo-ui/lib/api
 ```
 → map `OutlineItem{id, title, desc, pick:true}`.
 
-**Prompt Pha A — đặt ở `system` (không nối user prompt):**
+**Prompt Pha A — đặt ở `system` (không nối user prompt), TOPIC-AGNOSTIC — `build_phase_a_system(language)`:**
 ```
 [system]
-Bạn là trợ lý xây dựng series video [skill.display_name] bằng [language].
-Người dùng đưa ý tưởng. Hãy đề xuất outline gồm các tập (title + mô tả ngắn).
+Bạn là trợ lý GIÚP LÊN Ý TƯỞNG cho series video YouTube về BẤT KỲ chủ đề nào, bằng [language].
+Người dùng đưa ý tưởng (động vật, khoa học, lịch sử, công nghệ, kể chuyện…). Hãy đề xuất
+outline gồm các tập (title + mô tả ngắn). KHÔNG từ chối / hạn chế theo thể loại.
 Nếu ý tưởng thiếu thông tin quan trọng (đối tượng, góc nhìn, độ dài mong muốn),
 hãy HỎI LẠI ngắn gọn trước khi chốt. Sau phần trả lời, xuất block <<<OUTLINE>>>...
-[skill.script.rule_prompt_extra — định hướng riêng theo skill]
 [messages]: history hội thoại (UI gửi) + turn mới của user
 ```
-> Lưu ý: lúc Pha A có thể **chưa** biết `skill`/`language` nếu user chưa qua Setup. Xử lý: Pha A chạy với default (skill suy từ topic, language mặc định theo locale UI), Setup cho phép chỉnh lại trước approve. (Open Q #1.)
+> **KHÔNG** nhét `skill.script.rule_prompt_extra` vào đây — văn phong skill chỉ áp ở mục 9 (sinh script). `build_phase_a_system` chỉ nhận `language`, không nhận skill.
+> Lưu ý: lúc Pha A có thể **chưa** biết `skill`/`language` nếu user chưa qua Setup. Xử lý: Pha A chạy với `language` mặc định theo locale UI; skill **không** ảnh hưởng chat, được chọn ở Setup (mặc định `explain`) và chỉ áp lúc sinh script. (Open Q #1.)
 
 ---
 

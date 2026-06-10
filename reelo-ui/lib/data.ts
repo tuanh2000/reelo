@@ -142,52 +142,56 @@ export const DEMO_FALLBACK =
   typeof process !== "undefined" &&
   process.env.NEXT_PUBLIC_REQUIRE_AUTH === "false";
 
+// Skills are WRITING STYLES, not topic gates: every skill works for ANY subject
+// (animals, science, history, technology, storytelling…). `explain` is the
+// general-purpose default (listed first → SKILLS[0]); `religion` is a
+// specialised scholarly style, offered as one option among others.
 export const SKILLS: Skill[] = [
   {
+    id: "explain",
+    name: "Giải thích / Khoa học",
+    desc: "Giải thích rõ ràng, chính xác mọi chủ đề: khoa học, động vật, công nghệ, kinh tế…",
+    icon: "lightbulb",
+    accent: "#0ea5e9",
+    templates: [
+      { id: "ex-1", name: "Giải thích phổ thông", author: "Reelo Team", official: true },
+      { id: "ex-2", name: "Khoa học & Tự nhiên", author: "Nguyễn Khoa" },
+      { id: "ex-3", name: "Công nghệ dễ hiểu", author: "Cộng đồng" },
+    ],
+  },
+  {
+    id: "story",
+    name: "Kể chuyện",
+    desc: "Kể chuyện lôi cuốn, giàu cảm xúc cho mọi chủ đề — nhân vật, sự kiện, bí ẩn.",
+    icon: "drama",
+    accent: "#ef3e36",
+    templates: [
+      { id: "st-1", name: "Kể chuyện kịch tính", author: "Reelo Team", official: true },
+      { id: "st-2", name: "Chân dung nhân vật", author: "Phạm Hùng" },
+      { id: "st-3", name: "Bí ẩn & Hồ sơ chưa giải", author: "Cộng đồng" },
+    ],
+  },
+  {
+    id: "news",
+    name: "Tài liệu / Tin",
+    desc: "Tường thuật khách quan, dựa trên dữ kiện: sự kiện, vấn đề, xu hướng.",
+    icon: "newspaper",
+    accent: "#16a34a",
+    templates: [
+      { id: "nw-1", name: "Phóng sự tài liệu", author: "Reelo Team", official: true },
+      { id: "nw-2", name: "Bản tin tổng hợp", author: "Đỗ Lan" },
+    ],
+  },
+  {
     id: "religion",
-    name: "Tôn giáo học thuật",
-    desc: "Phân tích lịch sử & triết lý tôn giáo, giọng văn trang trọng.",
+    name: "Tôn giáo & Lịch sử (học thuật)",
+    desc: "Phân tích chuyên sâu nội dung tôn giáo/lịch sử, giọng văn học thuật trang trọng.",
     icon: "scroll",
     accent: "#7c3aed",
     templates: [
       { id: "rel-1", name: "Lịch sử tôn giáo chuyên sâu", author: "Reelo Team", official: true },
       { id: "rel-2", name: "Tôn giáo & Triết học so sánh", author: "TS. Lê Minh" },
       { id: "rel-3", name: "Huyền thoại & Tín ngưỡng cổ", author: "Cộng đồng" },
-    ],
-  },
-  {
-    id: "story",
-    name: "Storytelling",
-    desc: "Kể chuyện lôi cuốn, nhịp điệu kịch tính, hook mạnh.",
-    icon: "drama",
-    accent: "#ef3e36",
-    templates: [
-      { id: "st-1", name: "Kể chuyện lịch sử kịch tính", author: "Reelo Team", official: true },
-      { id: "st-2", name: "Chân dung nhân vật", author: "Phạm Hùng" },
-      { id: "st-3", name: "Bí ẩn & Hồ sơ chưa giải", author: "Cộng đồng" },
-    ],
-  },
-  {
-    id: "explain",
-    name: "Explainer",
-    desc: "Giải thích khái niệm khó thành dễ hiểu trong vài phút.",
-    icon: "lightbulb",
-    accent: "#0ea5e9",
-    templates: [
-      { id: "ex-1", name: "Khoa học trong 5 phút", author: "Reelo Team", official: true },
-      { id: "ex-2", name: "Công nghệ dễ hiểu", author: "Nguyễn Khoa" },
-      { id: "ex-3", name: "Kinh tế căn bản", author: "Cộng đồng" },
-    ],
-  },
-  {
-    id: "news",
-    name: "Tin tức nhanh",
-    desc: "Tổng hợp & bình luận tin nóng, cập nhật hằng ngày.",
-    icon: "newspaper",
-    accent: "#16a34a",
-    templates: [
-      { id: "nw-1", name: "Bản tin tổng hợp", author: "Reelo Team", official: true },
-      { id: "nw-2", name: "Bình luận thời sự", author: "Đỗ Lan" },
     ],
   },
 ];

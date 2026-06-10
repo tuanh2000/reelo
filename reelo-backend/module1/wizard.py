@@ -23,7 +23,6 @@ from clients.registry import ServiceRegistry, get_registry
 from models.spec import EpisodeSpec, ImageStyle, SeriesSpec, VoiceConfig
 
 from module1.prompt import build_phase_a_system
-from module1.skills import SkillTemplateError, load_skill_template
 
 _OUTLINE_OPEN = "<<<OUTLINE>>>"
 _OUTLINE_CLOSE = "<<<END_OUTLINE>>>"
@@ -103,7 +102,7 @@ async def run_phase_a(
     idea: str,
     history: list[dict[str, str]],
     *,
-    skill: str = "religion",
+    skill: str = "explain",
     language: str = "vi",
     provider: str = "stub-script",
     ctx: CallContext,
@@ -113,14 +112,17 @@ async def run_phase_a(
 
     ``skill`` / ``language`` / ``provider`` default to safe values because Phase A
     may run before Setup (Open Q #1): the UI lets the user revise them at Setup.
+
+    Phase A is TOPIC-AGNOSTIC (§4): the system prompt is a general video-planning
+    assistant and does NOT depend on the skill — the skill is purely a *writing
+    style* applied later at script generation, never a content gate here. The
+    ``skill`` argument is accepted for forward-compatibility / call-site symmetry
+    but is intentionally not used to shape the chat prompt.
     """
     reg = registry or get_registry()
-    try:
-        tmpl = load_skill_template(skill)
-    except SkillTemplateError:
-        tmpl = load_skill_template("religion")  # any present skill for the prompt frame
+    del skill  # not used in Phase A — kept topic-agnostic (§4)
 
-    system = build_phase_a_system(tmpl, language)
+    system = build_phase_a_system(language)
     messages = build_messages(idea, history)
 
     client = await reg.resolve(Task.WRITE_SCRIPT, provider, ctx)

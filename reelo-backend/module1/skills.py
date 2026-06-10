@@ -1,8 +1,10 @@
 """Skill template loader (``skills/<id>/template.yaml`` — integration §3).
 
-A skill template is the per-niche knowledge Module 1 uses to drive script
-structure and the per-tradition image style layer. ``religion`` is the
-reference; ``story`` / ``explain`` / ``news`` are scaffolds.
+A skill template is the *writing style* Module 1 applies at script generation:
+the script structure, word distribution, and the extra narration rules. It is
+NOT a content gate — the wizard chat (Phase A) is topic-agnostic. ``explain`` /
+``story`` / ``news`` are general-purpose (any subject); ``religion`` is a
+specialised scholarly skill with per-tradition image style layers.
 
 Typed view (:class:`SkillTemplate`) so callers get attribute access + sane
 defaults instead of raw-dict spelunking. Loaded results are cached per

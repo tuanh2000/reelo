@@ -1,34 +1,70 @@
-# News skill — SCAFFOLD. Owned by Module 1.
-# TODO(module1): refine structure/ratios/rule_prompt_extra after the religion
-# reference proves out.
+# News / Documentary skill — general-purpose. Owned by Module 1.
+# TOPIC-AGNOSTIC: covers ANY subject as a fact-based documentary or report (an
+# event, an issue, a trend, a place, a phenomenon). The skill decides the
+# *writing style* applied at script generation; it is never a content gate. The
+# chat (Phase A) is topic-agnostic and does not use this rule_prompt_extra.
+#
+# Consumed by:
+#   Module 1 — script.structure + word_ratios (chunk planning, §8),
+#              script.rule_prompt_extra (appended to the chunk system prompt, §9),
+#              voice.* → VoiceConfig defaults.
+#   Module 2 — image.recommended_preset / default_aspect for the visual look.
 
 id: news
-display_name: "Fast News"
+display_name: "News & Documentary"
 
 script:
-  # Placeholder bulletin flow; tune against real episodes.
+  # Documentary/report flow: lead → background/data → analysis → conclusion.
   structure:
-    - headline
-    - context
+    - lead
+    - background
     - details
     - analysis
-    - outlook
+    - conclusion
   word_ratios:
-    headline: 0.10
-    context: 0.20
-    details: 0.35
+    lead: 0.10
+    background: 0.22
+    details: 0.30
     analysis: 0.25
-    outlook: 0.10
+    conclusion: 0.13
   rule_prompt_extra: |
-    TODO(module1): news guidance. Lead with the headline fact, give just-enough
-    context, report verified details, offer brief analysis, and close with what to
-    watch next. Neutral register; attribute claims; avoid speculation as fact.
+    You write objective, fact-based documentary and news narration for a general
+    audience on ANY subject — an event, an issue, a trend, a place, a discovery, a
+    phenomenon. There is NO subject restriction; report whatever the episode is
+    about, accurately and fairly.
+
+    Structure the episode:
+    - lead: state the core fact or the heart of the story up front — what happened
+      or what this is, plainly and without hype.
+    - background: give the context needed to understand it — how we got here, the
+      relevant history, the key players or terms.
+    - details: report the verified specifics — figures, dates, locations, findings.
+      Attribute claims to their source ("according to ...") wherever it matters.
+    - analysis: explain what it means and why it matters, presenting the main
+      perspectives fairly; clearly separate established fact from interpretation.
+    - conclusion: sum up the takeaway and, where relevant, what to watch next.
+
+    Style rules: write for the EAR — clear, measured, neutral sentences, no
+    markdown, no stage directions. Lead with facts, not opinion. Attribute claims;
+    avoid presenting speculation as fact. If a figure or detail is uncertain, say
+    so plainly rather than inventing precision. Stay even-handed on contested
+    topics.
+
+    Image prompts (always English): describe a concrete, realistic scene relevant
+    to THIS point — the actual subject, setting, and action — never "a news
+    graphic". Prefer documentary, real-world imagery that a photo or stock clip
+    could match.
 
 image:
+  # The preset owns the visual look; a documentary look fits fact-based reporting
+  # across any subject.
   recommended_preset: "documentary"
   default_aspect: "16:9"
-  style_layers: {}  # TODO(module1)
+  style_layers: {}  # intentionally empty — preset handles the visual style.
 
 voice:
-  default_voice_id: null  # TODO(module1)
-  settings: {}
+  # Keep null so keyless Edge-TTS resolves a clear, language-appropriate default;
+  # no paid voice is assumed.
+  default_voice_id: null
+  settings:
+    speed: 1.0
