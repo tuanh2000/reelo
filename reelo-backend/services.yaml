@@ -184,7 +184,7 @@ services:
 
   kie:
     display_name: "kie.ai"
-    client: "clients.skill_image.SkillImageClient"
+    client: "clients.kie_image.KieImageClient"
     cost_tier: free                       # free credits, still needs a key
     auth: { type: key, key_ref: "kie", env: "KIE_API_KEY" }
     key_help_url: "https://kie.ai"

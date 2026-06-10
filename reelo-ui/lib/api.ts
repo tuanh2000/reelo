@@ -398,6 +398,37 @@ export async function retryChild(jobId: string, childId: string): Promise<GenJob
   );
   return data.jobs;
 }
+/**
+ * Re-run the produce steps that never finished (non-destructive recovery). Used
+ * when a produce run froze — e.g. a deploy restarted the worker mid-produce and
+ * Arq (max_tries=1) doesn't auto-retry, so the child jobs are stuck at
+ * running/queued and the UI spins with no progress. Keeps every `done` step and
+ * re-queues the rest (queued/running/error), then re-enqueues produce. Returns
+ * the refreshed produce-job lookup (so the UI resumes polling) + how many steps
+ * were re-queued. 409 if the episode was never produced (use startGeneration).
+ */
+export async function resumeProduction(
+  episodeId: string,
+): Promise<{ generation: GenerationLookup; requeued: number }> {
+  const data = await request<{
+    generation: {
+      jobId: string;
+      state: "running" | "done" | "error";
+      started_at?: string | null;
+      jobs?: GenJob[] | null;
+    };
+    requeued?: number;
+  }>(`/episodes/${episodeId}/resume-production`, { method: "POST" });
+  return {
+    generation: {
+      jobId: data.generation.jobId,
+      state: data.generation.state,
+      startedAt: data.generation.started_at ?? null,
+      jobs: data.generation.jobs ?? [],
+    },
+    requeued: data.requeued ?? 0,
+  };
+}
 
 /** Media curation (M2-12 / M2-13) — web-* candidate selection (photo OR clip) - */
 export type MediaType = "image" | "video";

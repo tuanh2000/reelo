@@ -171,7 +171,7 @@ input, textarea { font-family: inherit; }
 
 /* ---------- App shell ---------- */
 .shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100%; }
-.sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 18px 14px; gap: 4px; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 18px 14px; gap: 4px; position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; }
 .side-brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 18px; }
 .side-section { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); padding: 16px 12px 6px; }
 .nav-item { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: var(--r-md); color: var(--text-2); font-weight: 600; font-size: 14.5px; border: none; background: transparent; width: 100%; text-align: left; transition: .14s; }

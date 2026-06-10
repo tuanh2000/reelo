@@ -36,6 +36,7 @@ from web.schemas import (
     GenerationLookup,
     ImageCandidatesResponse,
     ImageSelectionRequest,
+    ResumeProductionResponse,
 )
 from worker.enqueue import enqueue_job
 
@@ -149,6 +150,13 @@ async def get_episode(
     if parent is not None:
         children = await gen_repo.children_for_episode(user_id, episode_id)
         generation = _generation_lookup(parent, children)
+        # Attach signed image previews (same as the poll endpoint) so a producing
+        # view rebuilt on mount/refocus shows the pictures already in storage.
+        from module2.jobs import image_preview_urls
+
+        previews = await image_preview_urls(user_id, episode_id, children, storage)
+        for j in generation.jobs:
+            j.preview_url = previews.get(j.id)
 
     return EpisodeDetailResponse(
         series_id=series_row.id,
@@ -237,6 +245,73 @@ async def reset_episode(
 
     return EpisodeResetResponse(
         episode=reset, jobs_deleted=jobs_deleted, assets_deleted=assets_deleted
+    )
+
+
+@router.post("/{episode_id}/resume-production", response_model=ResumeProductionResponse)
+async def resume_production(
+    episode_id: str, user_id: CurrentUser, db: DbSession
+) -> ResumeProductionResponse:
+    """Re-run the produce steps that never finished (non-destructive).
+
+    Recovery for a produce run that froze — most often because a deploy restarted
+    the worker mid-produce and ``max_tries=1`` means Arq does not auto-retry, so
+    the in-flight ``produce_episode`` task is gone and the child ``gen_jobs`` are
+    stuck at ``running`` / ``queued`` forever (the UI spins with no progress).
+
+    Keeps every ``done`` child as-is and resets the rest (``queued`` / ``running``
+    / ``error``) to ``queued`` (progress 0, cleared error), then re-enqueues
+    ``produce_episode``. The runner is idempotent on its job seeding + its assets
+    (resume manifest), so it only redoes what is actually missing and re-renders.
+
+    - 404 if the episode is missing.
+    - 409 if the episode was never produced (no parent job) — the UI should call
+      ``POST /generation/start`` ("Sản xuất") instead.
+    """
+    found = await find_series_for_episode(db, user_id, episode_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"episode {episode_id} not found"
+        )
+
+    gen_repo = GenJobRepo(db)
+    parent = await gen_repo.latest_parent_for_episode(user_id, episode_id)
+    if parent is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tập này chưa từng được sản xuất — hãy bấm “Sản xuất tập này”.",
+        )
+
+    children = [
+        c
+        for c in await gen_repo.children_for_episode(user_id, episode_id)
+        if getattr(c, "parent_id", None) == parent.id
+    ]
+    requeued = 0
+    for c in children:
+        if getattr(c, "state", None) != "done":
+            c.state = "queued"
+            c.progress = 0
+            c.stderr = None
+            requeued += 1
+    # The parent's own state can lag; nudge it back to running so the recovered run
+    # reads as in-flight (the child-derived state is authoritative for the UI).
+    parent.state = "running"
+    parent.stderr = None
+    await db.flush()
+
+    # Surface "đang sản xuất" again so a navigate-away rebuilds the producing view.
+    await EpisodeRepo(db).set_status(user_id, episode_id, "assets")
+
+    await enqueue_job("produce_episode", user_id, episode_id)
+
+    refreshed = [
+        c
+        for c in await gen_repo.children_for_episode(user_id, episode_id)
+        if getattr(c, "parent_id", None) == parent.id
+    ]
+    return ResumeProductionResponse(
+        generation=_generation_lookup(parent, refreshed), requeued=requeued
     )
 
 

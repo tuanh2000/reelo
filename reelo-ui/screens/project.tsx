@@ -19,7 +19,14 @@ import {
   type EpisodeStatus,
 } from "@/lib/data";
 import { DEMO_SERIES } from "@/lib/demo-fixtures";
-import { listSeries, getEpisode, renameSeries, resetEpisode, ApiError } from "@/lib/api";
+import {
+  listSeries,
+  getEpisode,
+  renameSeries,
+  resetEpisode,
+  resumeProduction,
+  ApiError,
+} from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
   return (
@@ -84,6 +91,8 @@ function EpisodeRow({
   nav,
   onReset,
   resetting,
+  onResumeProduction,
+  resumingProd,
 }: {
   ep: Episode;
   idx: number;
@@ -91,6 +100,8 @@ function EpisodeRow({
   nav: Nav;
   onReset?: (ep: Episode) => void;
   resetting?: boolean;
+  onResumeProduction?: (ep: Episode) => void;
+  resumingProd?: boolean;
 }) {
   const st = EP_STATUS[ep.status];
   const act = epAction(ep);
@@ -98,6 +109,9 @@ function EpisodeRow({
   // past a clean draft (any non-draft status, or a draft mid/post script gen).
   const canReset =
     !!onReset && (ep.status !== "draft" || (ep.scriptStatus != null && ep.scriptStatus !== "running"));
+  // "Chạy lại bước chưa xong": only while producing (status "assets"). Recovers a
+  // run frozen by a worker restart (deploy) — re-queues the unfinished steps.
+  const canResume = !!onResumeProduction && ep.status === "assets";
   return (
     <div className="card" style={{ boxShadow: "none", display: "flex", alignItems: "center", gap: 14, padding: 13 }}>
       <span
@@ -144,6 +158,18 @@ function EpisodeRow({
           )}
         </div>
       </div>
+      {canResume && (
+        <button
+          className="btn btn-ghost btn-sm"
+          title="Chạy lại các bước chưa xong (dùng khi sản xuất bị treo, ví dụ sau khi deploy)"
+          aria-label="Chạy lại bước chưa xong"
+          disabled={resumingProd}
+          onClick={() => onResumeProduction?.(ep)}
+          style={{ flex: "none", padding: "6px 8px", color: "var(--brand)" }}
+        >
+          <Icon name={resumingProd ? "loader" : "refresh-cw"} size={15} className={resumingProd ? "spin" : ""} />
+        </button>
+      )}
       {canReset && (
         <button
           className="btn btn-ghost btn-sm"
@@ -339,6 +365,23 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
     }
   };
 
+  // "Chạy lại bước chưa xong" per episode — non-destructive: re-queue the
+  // unfinished produce steps + re-enqueue produce, then open the workspace to
+  // watch live progress (it rebuilds the producing view from the backend).
+  const [resumingId, setResumingId] = React.useState<string | null>(null);
+  const doResumeProduction = async (ep: Episode) => {
+    setResumingId(ep.id);
+    setResetError(null);
+    try {
+      if (!isDemo) await resumeProduction(ep.id);
+      nav({ name: "workspace", series, episode: ep });
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : "Không chạy lại được sản xuất.");
+    } finally {
+      setResumingId(null);
+    }
+  };
+
   // Refresh the episode list (titles/statuses) from the backend on mount AND
   // whenever the tab regains focus, so the per-episode badge ("đang viết kịch
   // bản" / "đang sản xuất") + action buttons reflect the live worker progress
@@ -519,6 +562,8 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
               setResetTarget(e);
             }}
             resetting={resetting && resetTarget?.id === ep.id}
+            onResumeProduction={(e) => void doResumeProduction(e)}
+            resumingProd={resumingId === ep.id}
           />
         ))}
         <button

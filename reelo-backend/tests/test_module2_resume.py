@@ -13,6 +13,8 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+import pytest
+
 from clients.base import (
     AIClient,
     CallContext,
@@ -243,6 +245,13 @@ class _FakeJobRepo:
         row = self.store.get(job_id)
         return row if row and row.user_id == user_id else None
 
+    async def children_for_episode(self, user_id, episode_id):
+        return [
+            r
+            for r in self.store.values()
+            if r.episode_id == episode_id and r.user_id == user_id and r.parent_id is not None
+        ]
+
 
 class _EpRow:
     def __init__(self, ep_id, paths=None):
@@ -421,3 +430,112 @@ async def test_second_run_regenerates_when_cache_missing(tmp_path, monkeypatch):
     await runner.run_produce_episode("u", "e1", _ctx(), registry=reg, work_root=tmp_path / "w2")
     # Only the missing one is regenerated.
     assert len(img.calls) == 1
+
+
+async def test_crash_midrun_then_resume_only_regenerates_unfinished(tmp_path, monkeypatch):
+    """The user's case: a run dies after SOME images finished (e.g. a deploy killed
+    the worker). Because each finished image is persisted immediately (incremental,
+    A), a re-run reuses them from storage and only the unfinished segment is
+    (re)generated — no re-spent image credit on work already done."""
+    series, ep = _series(), _episode(3)
+    ep_row = _EpRow("e1")
+    storage = LocalObjectStorage(root=tmp_path / "store")
+    voice = _CountingVoiceClient(ServiceConfig("stub-voice", {}))
+
+    # Run 1: image client that FAILS on segment 2. Segments 1 and 3 run in parallel
+    # and DO finish (and are persisted) before the run raises (render blocked, M2-7).
+    class _FailSeg2(_CountingImageClient):
+        async def generate_image(self, req, out_path, ctx):
+            if req.label == "scene2":
+                self.calls.append(2)
+                raise RuntimeError("kie 500 on segment 2")
+            return await super().generate_image(req, out_path, ctx)
+
+    img1 = _FailSeg2(ServiceConfig("stub-image", {}))
+    runner = _patch_runner(monkeypatch, {}, ep_row, storage, series, ep)
+    with pytest.raises(RuntimeError):
+        await runner.run_produce_episode(
+            "u", "e1", _ctx(), registry=_Registry(image=img1, voice=voice),
+            work_root=tmp_path / "w1",
+        )
+
+    # The two finished images were made durable mid-run; segment 2 was not.
+    persisted = set((ep_row.paths.get(resume_mod.MANIFEST_KEY, {}).get("images") or {}).keys())
+    assert persisted == {"1", "3"}
+    assert ep_row.paths[resume_mod.MANIFEST_KEY].get("voice")  # voice persisted too
+
+    # Run 2 with a HEALTHY client: only segment 2 (the unfinished one) regenerates;
+    # segments 1 + 3 are reused from storage (no new paid image calls).
+    img2 = _CountingImageClient(ServiceConfig("stub-image", {}))
+    runner = _patch_runner(monkeypatch, {}, ep_row, storage, series, ep)
+    res = await runner.run_produce_episode(
+        "u", "e1", _ctx(), registry=_Registry(image=img2, voice=voice),
+        work_root=tmp_path / "w2",
+    )
+    assert res["status"] == "assembled"
+    assert len(img2.calls) == 1  # ONLY segment 2 regenerated (not all 3)
+
+
+class _FakeKieClient(AIClient):
+    """A kie-like client: async tasks, submit returns ``t-<label>``, counts submits."""
+
+    capabilities = {Task.GENERATE_IMAGE}
+    requires_key = False
+    supports_async_image_tasks = True
+
+    def __init__(self, config, *, crash_poll_ids=()):
+        super().__init__(config)
+        self.submits: list[str] = []  # labels submitted (proxy for spent credit)
+        self.crash_poll_ids = set(crash_poll_ids)
+
+    async def is_available(self, ctx):
+        return True
+
+    async def submit_image_task(self, req: ImageRequest, ctx) -> str:
+        self.submits.append(req.label or "")
+        return f"t-{req.label}"
+
+    async def poll_image_task(self, task_id, out_path, ctx, *, max_wait=300, poll_interval=5):
+        if task_id in self.crash_poll_ids:
+            raise RuntimeError(f"worker died polling {task_id}")
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"IMG")
+        return ImageResult(out_path=out, count=1, raw={"task_id": task_id})
+
+
+async def test_resume_fetches_inflight_kie_task_without_resubmit(tmp_path, monkeypatch):
+    """The taskId optimization: an image still generating on kie when the worker
+    died is FETCHED by its persisted taskId on resume (recordInfo) — not
+    re-submitted, so no re-spent credit on a task kie is already running."""
+    series, ep = _series(), _episode(2)
+    ep_row = _EpRow("e1")
+    storage = LocalObjectStorage(root=tmp_path / "store")
+    voice = _CountingVoiceClient(ServiceConfig("stub-voice", {}))
+
+    # Run 1: segment 2's poll dies (worker killed) AFTER its taskId was persisted;
+    # segment 1 finishes + is uploaded. The run raises (render blocked, M2-7).
+    kie1 = _FakeKieClient(ServiceConfig("kie", {}), crash_poll_ids={"t-scene2"})
+    runner = _patch_runner(monkeypatch, {}, ep_row, storage, series, ep)
+    with pytest.raises(RuntimeError):
+        await runner.run_produce_episode(
+            "u", "e1", _ctx(), registry=_Registry(image=kie1, voice=voice),
+            work_root=tmp_path / "w1",
+        )
+    assert kie1.submits == ["scene1", "scene2"]  # both tasks created on run 1
+    # Both taskIds persisted at submit; segment 2 was NOT uploaded (poll crashed).
+    kie_tasks = ep_row.paths.get(resume_mod.KIE_TASKS_KEY, {})
+    assert set(kie_tasks) == {"1", "2"}
+    man_imgs = ep_row.paths.get(resume_mod.MANIFEST_KEY, {}).get("images") or {}
+    assert "1" in man_imgs and "2" not in man_imgs
+
+    # Run 2: healthy kie. Segment 1 reused from STORAGE; segment 2 FETCHED by its
+    # persisted taskId. Crucially, NO new submit happens (zero re-spent credit).
+    kie2 = _FakeKieClient(ServiceConfig("kie", {}))
+    runner = _patch_runner(monkeypatch, {}, ep_row, storage, series, ep)
+    res = await runner.run_produce_episode(
+        "u", "e1", _ctx(), registry=_Registry(image=kie2, voice=voice),
+        work_root=tmp_path / "w2",
+    )
+    assert res["status"] == "assembled"
+    assert kie2.submits == []  # neither segment re-submitted → no new kie credit

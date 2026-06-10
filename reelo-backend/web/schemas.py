@@ -152,6 +152,23 @@ class GenerationLookup(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ResumeProductionResponse(BaseModel):
+    """``POST /episodes/{id}/resume-production`` — re-run the unfinished steps.
+
+    Re-queues every NON-``done`` child of the latest produce job (``queued`` /
+    ``running`` / ``error`` → ``queued``), keeps the ``done`` ones, and re-enqueues
+    ``produce_episode``. Used to recover a run that froze (e.g. the worker was
+    restarted by a deploy mid-produce, ``max_tries=1`` so Arq won't auto-retry).
+
+    - ``generation`` — the refreshed produce-job lookup (same shape the workspace
+      already consumes from ``GET /episodes/{id}``) so the UI can resume polling.
+    - ``requeued`` — how many child steps were put back in the queue.
+    """
+
+    generation: GenerationLookup
+    requeued: int = 0
+
+
 class EpisodeDetailResponse(BaseModel):
     """``GET /episodes/{id}`` — full episode spec + signed asset URLs + series id.
 

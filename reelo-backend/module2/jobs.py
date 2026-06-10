@@ -14,6 +14,7 @@ These helpers compose the platform-lead's ``GenJobRepo`` / ORM ``GenJobRow``
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -92,14 +93,73 @@ async def seed_parent(repo: GenJobRepo, user_id: str, ep: EpisodeSpec) -> str:
     return parent_id
 
 
+_IMAGE_NAME_RE = re.compile(r"Image (\d+):")
+
+
+def _image_index(name: str) -> int:
+    """Parse the segment index out of an image child's name (``"Image 3: …"``).
+
+    Image children are zipped with ``ep.segments`` IN ORDER by the runner
+    (:func:`module2.runner.run_images`), so a reused child set must come back in
+    segment-index order — hence we sort by the index embedded in the name.
+    """
+    m = _IMAGE_NAME_RE.match(name or "")
+    return int(m.group(1)) if m else 0
+
+
+def _reuse_children(
+    existing: list[GenJobRow], ep: EpisodeSpec, parent_id: str
+) -> SeededJobs | None:
+    """Map an existing child set back onto :class:`SeededJobs`, or ``None``.
+
+    Reuse only when the shape matches the current episode exactly — one voice,
+    one render, one thumbnail, and one image per segment. A mismatch (e.g. the
+    script was re-generated with a different segment count) returns ``None`` so
+    the caller seeds a fresh set instead of zipping the wrong job ids.
+    """
+    voice = [r for r in existing if r.kind == "voice"]
+    images = [r for r in existing if r.kind == "image"]
+    render = [r for r in existing if r.kind == "render"]
+    thumb = [r for r in existing if r.kind == "thumbnail"]
+    if not (
+        len(voice) == 1
+        and len(render) == 1
+        and len(thumb) == 1
+        and len(images) == len(ep.segments)
+        and images
+    ):
+        return None
+    images.sort(key=lambda r: _image_index(r.name))
+    return SeededJobs(
+        parent_id=parent_id,
+        voice_id=voice[0].id,
+        image_ids=[r.id for r in images],
+        render_id=render[0].id,
+        thumbnail_id=thumb[0].id,
+    )
+
+
 async def seed_children(
     repo: GenJobRepo, user_id: str, ep: EpisodeSpec, parent_id: str
 ) -> SeededJobs:
-    """Insert the child ``gen_jobs`` rows under ``parent_id`` (all ``queued``).
+    """Insert (or reuse) the child ``gen_jobs`` rows under ``parent_id``.
 
     One ``image`` child per segment (N — D3, no cap). Called by the runner after
     step 0 (ensure scripted), since the image-job count depends on the segments.
+
+    **Idempotent:** a resume / retry re-enqueues ``produce_episode``, which calls
+    this again for the SAME parent. When a matching child set already exists we
+    reuse it (returning its ids) instead of inserting a duplicate set — so the UI
+    never shows doubled "Voiceover" / "Image N" rows on a re-run.
     """
+    existing = [
+        r
+        for r in await repo.children_for_episode(user_id, ep.episode_id)
+        if r.parent_id == parent_id
+    ]
+    reused = _reuse_children(existing, ep, parent_id)
+    if reused is not None:
+        return reused
 
     def _child(kind: str, name: str) -> GenJobRow:
         return GenJobRow(
@@ -135,6 +195,54 @@ async def seed_children(
         render_id=render.id,
         thumbnail_id=thumb.id,
     )
+
+
+def _image_preview_key(user_id: str, episode_id: str, name: str) -> str | None:
+    """Storage key for an image child's PNG, reconstructed from its display name.
+
+    A child is named ``f"Image {index}: {image_label}"`` and its file is
+    ``images/{image_filename(index, image_label)}.png`` — so the key is derivable
+    from the name alone (no episode-spec load on the hot poll path). Returns
+    ``None`` if the name isn't an image-child name.
+    """
+    m = _IMAGE_NAME_RE.match(name or "")
+    if not m:
+        return None
+    index = int(m.group(1))
+    parts = (name or "").split(": ", 1)
+    label = parts[1] if len(parts) == 2 else ""
+    from storage import episode_key
+
+    from module2.materialize import image_filename
+
+    return episode_key(
+        user_id, episode_id, "images", f"{image_filename(index, label)}.png"
+    )
+
+
+async def image_preview_urls(
+    user_id: str, episode_id: str, rows: list[GenJobRow], storage
+) -> dict[str, str]:
+    """Map ``{image_job_id: signed_url}`` for every ``done`` image child.
+
+    Lets the produce screen preview each picture as it lands in storage (assets are
+    uploaded incrementally per segment). Cheap: ``signed_url`` only mints a URL (no
+    network / no existence check) — a missing/video asset simply 404s in the
+    browser, which the UI hides. Best-effort: any storage hiccup yields no preview
+    for that job rather than failing the poll.
+    """
+    out: dict[str, str] = {}
+    for r in rows:
+        if getattr(r, "kind", None) != "image" or getattr(r, "state", None) != "done":
+            continue
+        key = _image_preview_key(user_id, episode_id, r.name)
+        if key is None:
+            continue
+        try:
+            out[r.id] = await storage.signed_url(key)
+        except Exception:  # noqa: BLE001 — preview is best-effort
+            continue
+    return out
 
 
 async def find_parent_for_episode(
@@ -252,6 +360,7 @@ __all__ = [
     "SeededJobs",
     "seed_parent",
     "seed_children",
+    "image_preview_urls",
     "find_parent_for_episode",
     "estimate_voice_chars",
     "cost_estimate",

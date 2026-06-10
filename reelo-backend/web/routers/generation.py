@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 from db.repository import ApiKeyRepo, GenJobRepo
 from module1.persistence import find_series_for_episode
 from module2 import jobs as jobmod
+from storage import get_storage
 from web._provider_keys import series_readiness
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
@@ -81,14 +82,19 @@ async def poll_generation(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found"
         )
     children = await repo.children_for_episode(user_id, parent.episode_id)
+    jobs = [jobmod.row_to_genjob(c) for c in children]
+    # Attach a signed preview URL to each finished image so the produce screen can
+    # show pictures as they land in storage (incremental upload per segment).
+    previews = await jobmod.image_preview_urls(
+        user_id, parent.episode_id, children, get_storage()
+    )
+    for j in jobs:
+        j.preview_url = previews.get(j.id)
     # Surface the parent's seed time (server clock) so the UI can anchor the
     # produce elapsed counter to server time instead of a client mount timer.
     created = getattr(parent, "created_at", None)
     started_at = created.isoformat() if created is not None else None
-    return PollGenerationResponse(
-        jobs=[jobmod.row_to_genjob(c) for c in children],
-        started_at=started_at,
-    )
+    return PollGenerationResponse(jobs=jobs, started_at=started_at)
 
 
 @router.post("/{job_id}/retry/{child_id}", response_model=PollGenerationResponse)

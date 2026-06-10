@@ -12,6 +12,7 @@ import {
   pollGenerationDetail,
   retryChild,
   resetEpisode,
+  resumeProduction,
   type CostEstimate,
   type EpisodeDetail,
   type SegmentSpec,
@@ -180,6 +181,43 @@ function SegmentCard({ seg, idx }: { seg: ScriptSegment; idx: number }) {
   );
 }
 
+// Thumbnail badge for a finished image job — shows the picture the moment it
+// lands in storage (preview_url), clickable to open full size. Falls back to the
+// job icon if the image 404s (e.g. a video segment / expired URL).
+function JobThumb({ url, icon, color }: { url: string; icon: string; color: string }) {
+  const [broken, setBroken] = React.useState(false);
+  const box: React.CSSProperties = {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    background: "var(--surface-2)",
+    color,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flex: "none",
+    overflow: "hidden",
+  };
+  if (broken) {
+    return (
+      <span style={box}>
+        <Icon name={icon} size={18} />
+      </span>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" style={{ ...box, padding: 0 }} title="Mở ảnh đầy đủ">
+      <img
+        src={url}
+        alt=""
+        loading="lazy"
+        onError={() => setBroken(true)}
+        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+      />
+    </a>
+  );
+}
+
 function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => void }) {
   const stateMap = {
     done: { c: "#16a34a", t: "Xong", ic: "check-circle-2" },
@@ -192,21 +230,25 @@ function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => 
   return (
     <div className="card" style={{ padding: 14, boxShadow: "none", display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-        <span
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: 11,
-            background: "var(--surface-2)",
-            color: st.c,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flex: "none",
-          }}
-        >
-          <Icon name={job.icon} size={18} />
-        </span>
+        {job.preview_url ? (
+          <JobThumb url={job.preview_url} icon={job.icon} color={st.c} />
+        ) : (
+          <span
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 11,
+              background: "var(--surface-2)",
+              color: st.c,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: "none",
+            }}
+          >
+            <Icon name={job.icon} size={18} />
+          </span>
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
             <span style={{ fontWeight: 700, fontSize: 14 }}>{job.name}</span>
@@ -233,15 +275,79 @@ function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => 
   );
 }
 
+// One tile in the live image gallery — opens the full picture on click; hides
+// itself if the asset 404s (e.g. a still-uploading / video segment).
+function GalleryTile({ url, label }: { url: string; label: string }) {
+  const [broken, setBroken] = React.useState(false);
+  if (broken) return null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      title={`${label} · mở ảnh đầy đủ`}
+      style={{
+        display: "block",
+        aspectRatio: "16 / 9",
+        borderRadius: 10,
+        overflow: "hidden",
+        background: "var(--surface-2)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <img
+        src={url}
+        alt={label}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+      />
+    </a>
+  );
+}
+
+// Live gallery of the images produced so far (each lands in storage incrementally,
+// so they appear one by one while the rest are still generating).
+function ImageGallery({ jobs }: { jobs: GenJob[] }) {
+  const previews = jobs.filter((j) => j.preview_url && j.id.includes("image"));
+  if (previews.length === 0) return null;
+  return (
+    <div className="card" style={{ padding: 16, boxShadow: "none" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
+        <Icon name="image" size={17} style={{ color: "var(--brand)" }} />
+        <span style={{ fontWeight: 700, fontSize: 14 }}>Ảnh đã tạo</span>
+        <Badge tone="neutral" style={{ marginLeft: "auto" }}>
+          {previews.length} ảnh
+        </Badge>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {previews.map((j) => (
+          <GalleryTile key={j.id} url={j.preview_url as string} label={j.name} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProducingView({
   jobs,
   onDone,
   onRetry,
+  onResume,
+  resuming,
   elapsed,
 }: {
   jobs: GenJob[];
   onDone: () => void;
   onRetry: (childId: string) => void;
+  onResume?: () => void;
+  resuming?: boolean;
   elapsed?: number;
 }) {
   const allDone = jobs.length > 0 && jobs.every((j) => j.state === "done");
@@ -298,12 +404,27 @@ function ProducingView({
                 : "Bạn có thể đóng tab — tiến độ được lưu tự động và tiếp tục sau."}
           </p>
         </div>
-        {allDone && (
+        {allDone ? (
           <Button variant="primary" size="md" icon="arrow-right" onClick={onDone}>
             Tiếp tục duyệt
           </Button>
+        ) : (
+          onResume && (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={resuming ? "loader" : "refresh-cw"}
+              disabled={resuming}
+              onClick={onResume}
+              title="Gửi lại các bước chưa hoàn thành và tiếp tục sản xuất. Dùng khi sản xuất bị treo (ví dụ sau khi deploy / khởi động lại worker)."
+            >
+              {resuming ? "Đang chạy lại…" : "Chạy lại bước chưa xong"}
+            </Button>
+          )
         )}
       </div>
+
+      <ImageGallery jobs={jobs} />
 
       {hasError && errorJobs.length > 1 && (
         <ErrorBox
@@ -731,6 +852,28 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
     }
   };
 
+  // Resume a frozen produce run: re-queue the unfinished steps + re-enqueue
+  // produce, then re-anchor the producing view to the refreshed job so the
+  // poll effect picks the work back up (handles a worker restarted by a deploy).
+  const [resuming, setResuming] = React.useState(false);
+  const onResumeProduction = async () => {
+    setResuming(true);
+    setProduceError(null);
+    try {
+      const { generation } = await resumeProduction(episode.id);
+      setJobId(generation.jobId);
+      setJobs(generation.jobs);
+      setProduceStartedMs(generation.startedAt ? isoToMs(generation.startedAt) : null);
+      setStage("producing");
+    } catch (e) {
+      setProduceError(
+        e instanceof Error ? e.message : "Không chạy lại được các bước chưa xong.",
+      );
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const rail = stage === "producing" ? railFromJobs(jobs) : { doneIds: ["script"], activeId: "script" };
   const doneIds = rail.doneIds;
   const activeId = rail.activeId;
@@ -889,6 +1032,8 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
             <ProducingView
               jobs={jobs}
               onRetry={onRetry}
+              onResume={onResumeProduction}
+              resuming={resuming}
               elapsed={produceElapsed}
               onDone={() => nav({ name: "review", series, episode, jobId: jobId ?? undefined })}
             />

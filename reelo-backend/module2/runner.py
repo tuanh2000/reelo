@@ -89,6 +89,127 @@ async def update_job(
 
 
 # --------------------------------------------------------------------------- #
+# Incremental persistence (resume, A) — make a finished asset durable AT ONCE  #
+# --------------------------------------------------------------------------- #
+async def _upload_asset(user_id: str, episode_id: str, lo: ProjectLayout, local: Path) -> None:
+    """Upload ONE finished asset to object storage immediately (not at run end).
+
+    Keyed exactly like :func:`upload_project` (``relative_to(root)``) so the resume
+    fetch (:func:`module2.resume.reuse_segment_image` / ``reuse_voice``) finds it.
+    """
+    rel = Path(local).relative_to(lo.root).as_posix()
+    key = episode_key(user_id, episode_id, *rel.split("/"))
+    await get_storage().put_file(key, Path(local))
+
+
+async def _record_manifest_entry(
+    user_id: str,
+    episode_id: str,
+    lock: asyncio.Lock,
+    *,
+    image: tuple[int, str] | None = None,
+    voice_hash: str | None = None,
+) -> None:
+    """Merge one asset's content hash into ``episode.paths[asset_manifest]`` + commit.
+
+    The commit (``session_scope``) makes the entry durable so a crash mid-run leaves
+    a manifest that proves which assets are already in storage — the next run reuses
+    them instead of re-spending image/voice credit (resume, A). Serialized by
+    ``lock`` because the parallel image tasks read-modify-write the same JSONB blob
+    (a shallow ``set_paths`` merge would otherwise drop concurrent sibling entries).
+    """
+    async with lock:
+        async with session_scope() as session:
+            repo = EpisodeRepo(session)
+            ep_row = await repo.get(user_id, episode_id)
+            paths = dict((ep_row.paths or {})) if ep_row is not None else {}
+            man = dict(paths.get(resume_mod.MANIFEST_KEY) or {})
+            if image is not None:
+                images = dict(man.get("images") or {})
+                images[str(image[0])] = image[1]
+                man["images"] = images
+            if voice_hash is not None:
+                man["voice"] = voice_hash
+            await repo.set_paths(
+                user_id, episode_id, {resume_mod.MANIFEST_KEY: man}, merge=True
+            )
+
+
+async def _record_kie_task(
+    user_id: str,
+    episode_id: str,
+    lock: asyncio.Lock,
+    index: int,
+    task_id: str,
+    want_hash: str,
+) -> None:
+    """Persist one segment's kie ``taskId`` (+ content hash) to ``paths[kie_tasks]``.
+
+    Committed immediately so a crash right after ``createTask`` leaves the taskId
+    recoverable — a resumed run fetches the in-flight image by id (``recordInfo``)
+    instead of re-submitting (re-spending credit). Serialized by ``lock`` (parallel
+    image tasks share the JSONB blob).
+    """
+    async with lock:
+        async with session_scope() as session:
+            repo = EpisodeRepo(session)
+            ep_row = await repo.get(user_id, episode_id)
+            paths = dict((ep_row.paths or {})) if ep_row is not None else {}
+            tasks = dict(paths.get(resume_mod.KIE_TASKS_KEY) or {})
+            tasks[str(index)] = {"task_id": task_id, "hash": want_hash}
+            await repo.set_paths(
+                user_id, episode_id, {resume_mod.KIE_TASKS_KEY: tasks}, merge=True
+            )
+
+
+async def _kie_image_with_resume(
+    client,
+    req: ImageRequest,
+    out_path: Path,
+    ctx: CallContext,
+    *,
+    index: int,
+    want_hash: str,
+    prev_task: dict | None,
+    user_id: str,
+    episode_id: str | None,
+    persist_lock: asyncio.Lock | None,
+):
+    """Generate (or RE-FETCH) a kie image, reusing an in-flight task when possible.
+
+    kie tasks survive a worker restart, so on resume we first try the persisted
+    taskId (if its content hash still matches): ``recordInfo`` either returns the
+    finished image (downloaded here — NO new credit) or reports it still cooking.
+    Only when there is no usable task do we ``createTask`` afresh — persisting the
+    new taskId the instant it exists so the next interrupt can recover it too.
+    """
+    from clients.kie_image import KieTaskGone
+
+    # 1. Reuse the persisted task (same content) — fetch without re-spending credit.
+    if prev_task and prev_task.get("task_id") and prev_task.get("hash") == want_hash:
+        try:
+            res = await client.poll_image_task(prev_task["task_id"], out_path, ctx)
+            log.info(
+                "resume: reused kie task %s for segment %d (no resubmit)",
+                prev_task["task_id"], index,
+            )
+            return res
+        except KieTaskGone as exc:
+            log.info("resume: kie task for segment %d gone (%s); resubmitting", index, exc)
+        # KieTaskPending (still generating) propagates → this segment errors but the
+        # taskId stays persisted, so a later resume can still fetch it (no resubmit).
+
+    # 2. No usable task → create a fresh one, persist its id at once, then poll.
+    task_id = await client.submit_image_task(req, ctx)
+    if episode_id is not None and persist_lock is not None:
+        try:
+            await _record_kie_task(user_id, episode_id, persist_lock, index, task_id, want_hash)
+        except Exception as exc:  # noqa: BLE001 — best-effort; a fresh task still polls
+            log.warning("could not persist kie task for segment %d: %s", index, exc)
+    return await client.poll_image_task(task_id, out_path, ctx)
+
+
+# --------------------------------------------------------------------------- #
 # Stages                                                                      #
 # --------------------------------------------------------------------------- #
 async def ensure_scripted(
@@ -129,6 +250,8 @@ async def run_images(
     curation: dict | None = None,
     episode_id: str | None = None,
     prev_manifest: dict | None = None,
+    persist_lock: asyncio.Lock | None = None,
+    prev_kie_tasks: dict | None = None,
 ) -> list[BaseException | None]:
     """Generate one PNG per segment in parallel (Semaphore-bounded).
 
@@ -176,14 +299,15 @@ async def run_images(
     media_plan: dict[int, dict] = {}
     reused: set[int] = set()
     prev = prev_manifest or {}
+    prev_tasks = prev_kie_tasks or {}
 
     async def _one(seg, job_id: str) -> BaseException | None:
         await update_job(user_id, job_id, state="running", progress=jobmod.PROGRESS_START)
         img_out = lo.image_png(seg.index, seg.image_label)
         prompt_file = lo.image_txt(seg.index, seg.image_label)
+        want = resume_mod.image_hash(series, seg, curation=curation)
         # Resume: reuse the cached image/clip when unchanged + still in storage.
         if episode_id is not None:
-            want = resume_mod.image_hash(series, seg, curation=curation)
             kind = await resume_mod.reuse_segment_image(
                 user_id, episode_id, seg, lo,
                 want_hash=want, prev=prev, curation=curation,
@@ -221,20 +345,47 @@ async def run_images(
                     if isinstance(ctx.extra, dict):
                         ctx.extra["commons_used"].add(chosen.id)
                 else:
-                    result = await auto_client.generate_image(
-                        ImageRequest(
-                            prompt_file=prompt_file,
-                            size=series.image_style.aspect,
-                            query=seg.image_query or mat.deslug(seg.image_label),
-                            label=seg.image_label,
-                        ),
-                        out_path=img_out,
-                        ctx=ctx,
+                    img_req = ImageRequest(
+                        prompt_file=prompt_file,
+                        size=series.image_style.aspect,
+                        query=seg.image_query or mat.deslug(seg.image_label),
+                        label=seg.image_label,
                     )
+                    # Async-task providers (kie.ai): reuse an in-flight task by id on
+                    # resume instead of re-submitting (no re-spent credit). Other
+                    # generative providers use the plain one-shot generate_image.
+                    if getattr(auto_client, "supports_async_image_tasks", False):
+                        result = await _kie_image_with_resume(
+                            auto_client, img_req, img_out, ctx,
+                            index=seg.index, want_hash=want,
+                            prev_task=prev_tasks.get(str(seg.index)),
+                            user_id=user_id, episode_id=episode_id,
+                            persist_lock=persist_lock,
+                        )
+                    else:
+                        result = await auto_client.generate_image(
+                            img_req, out_path=img_out, ctx=ctx
+                        )
                 media_plan[seg.index] = {
                     "media_type": media_type,
                     "path": result.out_path,
                 }
+                # Incremental persist (resume, A): push THIS asset to storage +
+                # record its hash NOW, so an interrupt (deploy/reboot mid-run)
+                # leaves it reusable and a re-run skips it (no re-spent credit).
+                # Best-effort: a persist hiccup must not fail the segment.
+                if episode_id is not None and persist_lock is not None:
+                    try:
+                        await _upload_asset(user_id, episode_id, lo, result.out_path)
+                        await _record_manifest_entry(
+                            user_id, episode_id, persist_lock,
+                            image=(seg.index, want),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — persist is best-effort
+                        log.warning(
+                            "incremental persist failed for segment %d: %s",
+                            seg.index, exc,
+                        )
                 # Capture attribution (web-* providers) for credits.json.
                 attribution = (result.raw or {}).get("attribution") if result.raw else None
                 if attribution:
@@ -275,6 +426,7 @@ async def run_voice(
     ep: EpisodeSpec | None = None,
     episode_id: str | None = None,
     prev_manifest: dict | None = None,
+    persist_lock: asyncio.Lock | None = None,
 ) -> voice.VoiceOutcome:
     """Run the voice stage, updating the voice job row around it.
 
@@ -314,6 +466,17 @@ async def run_voice(
             progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
         )
         raise
+    # Incremental persist (resume, A): make the fresh voiceover durable + record its
+    # hash now, so an interrupt mid-run doesn't force a re-synthesis next run.
+    if ep is not None and episode_id is not None and persist_lock is not None:
+        try:
+            await _upload_asset(user_id, episode_id, lo, lo.voice_mp3)
+            await _record_manifest_entry(
+                user_id, episode_id, persist_lock,
+                voice_hash=resume_mod.voice_hash(series, ep),
+            )
+        except Exception as exc:  # noqa: BLE001 — persist is best-effort
+            log.warning("incremental voice persist failed: %s", exc)
     await update_job(user_id, voice_job_id, state="done", progress=jobmod.PROGRESS_DONE)
     return outcome
 
@@ -398,6 +561,22 @@ async def _load_prev_manifest(user_id: str, episode_id: str) -> dict:
         return {}
 
 
+async def _load_prev_kie_tasks(user_id: str, episode_id: str) -> dict:
+    """Read persisted kie ``taskId``s (resume), or ``{}`` on any read failure.
+
+    Lets the runner re-fetch an in-flight kie image by id after an interrupt
+    instead of re-submitting. A read failure safely degrades to a fresh submit.
+    """
+    try:
+        async with session_scope() as session:
+            ep_row = await EpisodeRepo(session).get(user_id, episode_id)
+            paths = (ep_row.paths or {}) if ep_row is not None else {}
+        return resume_mod.read_kie_tasks(paths)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning("could not load kie tasks for %s: %s", episode_id, exc)
+        return {}
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration                                                               #
 # --------------------------------------------------------------------------- #
@@ -473,12 +652,18 @@ async def run_produce_episode(
     # (skipping paid kie/eleven calls). Empty {} on a first run / unreadable → full
     # regenerate.
     prev_manifest = await _load_prev_manifest(user_id, episode_id)
+    # Resume (taskId): persisted kie task ids → re-fetch an in-flight image by id
+    # instead of re-submitting (no re-spent credit). Empty {} for non-kie/first run.
+    prev_kie_tasks = await _load_prev_kie_tasks(user_id, episode_id)
 
-    # Voice ∥ N images.
+    # Voice ∥ N images. A single per-run lock serializes the incremental
+    # asset-hash manifest writes (resume, A) the parallel image tasks + voice make.
+    persist_lock = asyncio.Lock()
     voice_task = asyncio.create_task(
         run_voice(
             spec, lo, ctx, seeded.voice_id, user_id, registry=reg,
             ep=ep, episode_id=episode_id, prev_manifest=prev_manifest,
+            persist_lock=persist_lock,
         )
     )
     images_task = asyncio.create_task(
@@ -486,6 +671,7 @@ async def run_produce_episode(
             spec, ep, lo, ctx, seeded.image_ids, user_id, registry=reg,
             concurrency=IMAGE_CONCURRENCY, curation=curation,
             episode_id=episode_id, prev_manifest=prev_manifest,
+            persist_lock=persist_lock, prev_kie_tasks=prev_kie_tasks,
         )
     )
     voice_outcome, image_errors = await asyncio.gather(voice_task, images_task)

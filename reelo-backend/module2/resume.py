@@ -49,6 +49,14 @@ log = logging.getLogger("reelo.module2.resume")
 # Key under ``episode.paths`` (JSONB) holding the per-asset content-hash manifest.
 MANIFEST_KEY = "asset_manifest"
 
+# Key under ``episode.paths`` (JSONB) holding per-segment kie.ai task ids. kie
+# generation is async (createTask → taskId → recordInfo); persisting the taskId at
+# submit lets a resumed run FETCH an in-flight image by id instead of re-submitting
+# (re-spending credit). Shape: ``{"<segment_index>": {"task_id": str, "hash": str}}``
+# where ``hash`` is the segment's :func:`image_hash` (so a re-edited prompt, which
+# changes the hash, never reuses the old task).
+KIE_TASKS_KEY = "kie_tasks"
+
 
 def _sha(*parts: str) -> str:
     """Stable short hex digest of the given text parts (order matters)."""
@@ -129,6 +137,12 @@ def read_manifest(paths: dict | None) -> dict:
     """Project the ``asset_manifest`` blob out of an episode's ``paths`` (or {})."""
     man = (paths or {}).get(MANIFEST_KEY)
     return dict(man) if isinstance(man, dict) else {}
+
+
+def read_kie_tasks(paths: dict | None) -> dict:
+    """Project the ``kie_tasks`` blob out of an episode's ``paths`` (or {})."""
+    tasks = (paths or {}).get(KIE_TASKS_KEY)
+    return dict(tasks) if isinstance(tasks, dict) else {}
 
 
 def build_manifest(
@@ -251,6 +265,8 @@ async def reuse_srt(user_id: str, episode_id: str, lo: ProjectLayout) -> bool:
 
 __all__ = [
     "MANIFEST_KEY",
+    "KIE_TASKS_KEY",
+    "read_kie_tasks",
     "image_hash",
     "voice_hash",
     "thumbnail_hash",

@@ -116,6 +116,9 @@ export interface GenJob {
   progress: number;
   // Captured failure detail (copyable in the UI) — only set when state==="error".
   stderr?: string | null;
+  // Signed URL to the finished image (image jobs only, once done) so the produce
+  // screen previews each picture as it lands in storage. Minted fresh per poll.
+  preview_url?: string | null;
 }
 
 // Internal client-side route (replace with a real router when wiring pages/URLs)

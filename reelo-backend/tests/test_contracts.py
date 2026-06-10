@@ -63,9 +63,14 @@ def test_genjob_matches_ui_shape():
     job = GenJob(id="j1", name="Voice", icon="mic", state="running", progress=42)
     d = job.model_dump()
     # `stderr` is the copyable per-job error detail (None unless state == "error").
-    assert set(d.keys()) == {"id", "name", "icon", "state", "progress", "stderr"}
+    # `preview_url` is the signed image URL (image jobs only, once done) for the
+    # produce-screen live preview. Both default to None.
+    assert set(d.keys()) == {
+        "id", "name", "icon", "state", "progress", "stderr", "preview_url"
+    }
     assert d["state"] == "running"
     assert d["stderr"] is None
+    assert d["preview_url"] is None
 
 
 def test_aes_gcm_round_trip():

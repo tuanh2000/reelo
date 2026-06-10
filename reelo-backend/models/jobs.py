@@ -28,6 +28,11 @@ class GenJob(BaseModel):
     # Captured failure detail (truncated) — only set when ``state == "error"`` so
     # the UI can show a copyable per-job error block. None otherwise.
     stderr: str | None = None
+    # Signed URL to the finished asset (image jobs only, once ``done``) so the
+    # produce screen can preview each picture the moment it lands in storage —
+    # the assets are uploaded incrementally per segment. None for non-image /
+    # not-yet-done jobs. Minted fresh per poll (it expires).
+    preview_url: str | None = None
 
 
 # Canonical child-job kinds the produce pipeline seeds (Module 2 §8). The
