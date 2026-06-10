@@ -98,7 +98,12 @@ services:
         # parser handles structured output, so we advertise JSON mode as false.
         supports_json_mode: false
         supports_system_prompt: true          # via --system-prompt
-        timeout: 300
+        # Per-CALL fail-fast cap (one `claude -p` single-turn chunk). A single
+        # turn answers in seconds; if it hasn't returned in this window the CLI
+        # is wedged (bad token / non-interactive env) and the client kills it +
+        # raises ProviderUnavailableError instead of hanging to the job timeout.
+        # The client clamps this to _MAX_CALL_TIMEOUT (150s) regardless.
+        timeout: 120
     pricing:
       # Billed to the user's Claude subscription, not Reelo — record zero cost.
       write-script: { per_1k_input: 0.0, per_1k_output: 0.0 }

@@ -11,12 +11,25 @@ Family: subscription-CLI. We do NOT reuse :func:`run_skill_script` (that parses 
 skill-specific JSON shape and runs ``python``); instead we ``asyncio``-exec the
 ``claude`` binary directly and parse its native ``--output-format json`` result.
 
-Verified against ``claude`` CLI 2.1.x (BƯỚC 0):
+Verified against ``claude`` CLI 2.1.x (BƯỚC 0 — reproduced on a real binary in a
+fresh ``CLAUDE_CONFIG_DIR`` mimicking a clean worker container):
+- **stdin MUST be closed** (``stdin=DEVNULL``). In ``-p`` mode the CLI reads
+  stdin; when stdin is an inherited/open pipe with no EOF (the default for an arq
+  worker child) the CLI blocks waiting for stdin data. Newer builds self-recover
+  after ~3s with a ``"no stdin data received"`` warning, but older builds block
+  *forever* — this was the production hang (``proc.communicate()`` never
+  returned). Passing ``stdin=DEVNULL`` makes the run start immediately (measured
+  ~0.8s vs ~4.4s) and removes the hang entirely.
+- **No interactive onboarding/trust prompt** appears in ``-p`` mode even with an
+  empty config dir; the CLI just creates ``.claude.json`` and runs. We still
+  pre-seed a minimal ``.claude.json`` (``hasCompletedOnboarding`` +
+  ``bypassPermissionsModeAccepted``) defensively so older/other builds that *do*
+  gate on onboarding/trust never block headless.
 - Auth headless: env ``CLAUDE_CODE_OAUTH_TOKEN=<token>`` used as a bearer token.
   We also pin ``CLAUDE_CONFIG_DIR`` to a per-user temp dir so one user's token
-  never reads another user's keychain/session (and an invalid token fails clean
-  with ``api_error_status: 401`` instead of silently falling back to a logged-in
-  machine account).
+  never reads another user's keychain/session. A bad/empty token fails *fast*
+  (``api_error_status: 401`` "Failed to authenticate" in ~4s; or
+  ``"Not logged in · Please run /login"`` with no token) — never a hang.
 - Single-turn, no tools/agentic: ``--tools "" --max-turns 1 --permission-mode
   default`` (``--system-prompt`` carries ``req.system``; no CLAUDE.md/agent).
 - ``--output-format json`` prints ONE object on stdout with:
@@ -55,7 +68,17 @@ from usage import compute_cost
 _TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _KEY_REF_DEFAULT = "claude_oauth"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
-_DEFAULT_TIMEOUT = 300.0  # seconds — scriptwriting can be a long single turn
+# Per-CALL fail-fast cap. One ``claude -p`` single-turn chunk responds in seconds;
+# if it has not returned in this window the CLI is wedged (bad headless env /
+# token / stdin) and we kill it + raise rather than letting it eat the whole arq
+# job_timeout (and trigger pointless 300s×N retries). A whole script is many
+# chunks, so the *job* timeout (worker/settings.py) is larger than this.
+_DEFAULT_TIMEOUT = 120.0  # seconds — single-turn chunk; kill + fail-fast past this
+# Hard upper bound for one CLI call, even if services.yaml configures more. A
+# single ``claude -p`` turn never legitimately needs minutes; anything longer is
+# a wedge, so we clamp here and rely on fail-fast + the arq job_timeout for the
+# whole multi-chunk script.
+_MAX_CALL_TIMEOUT = 150.0
 
 
 class ClaudeCliClient(AIClient):
@@ -81,8 +104,14 @@ class ClaudeCliClient(AIClient):
         return block.get("default_model") or _DEFAULT_MODEL
 
     def _timeout(self) -> float:
+        """Per-CALL fail-fast timeout (seconds), bounded so a wedged CLI can't eat
+        the whole arq ``job_timeout``. ``services.yaml`` may raise it for slow
+        chunks, but it is clamped to ``_MAX_CALL_TIMEOUT``."""
         block = self.config.tasks.get(Task.WRITE_SCRIPT.value, {}) or {}
-        return float(block.get("timeout", self.config.raw.get("timeout", _DEFAULT_TIMEOUT)))
+        configured = float(
+            block.get("timeout", self.config.raw.get("timeout", _DEFAULT_TIMEOUT))
+        )
+        return min(configured, _MAX_CALL_TIMEOUT)
 
     @staticmethod
     def _binary() -> str:
@@ -232,6 +261,7 @@ async def _run_claude(
     )
 
     config_dir = tempfile.mkdtemp(prefix="reelo-claude-")
+    _seed_config_dir(config_dir)
     env = {
         **os.environ,
         _TOKEN_ENV: token,
@@ -239,22 +269,41 @@ async def _run_claude(
         # Defensive: make sure a metered API key in the host env can't shadow the
         # subscription OAuth token we want the CLI to use.
         "ANTHROPIC_API_KEY": "",
+        # Belt-and-suspenders against interactive gates in headless containers:
+        # no telemetry/auto-update prompts, and explicitly headless/non-tty.
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_TELEMETRY": "1",
+        "CI": "1",
     }
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            # CRITICAL (BƯỚC 0): close stdin. In ``-p`` mode the CLI reads stdin;
+            # an inherited/open pipe with no EOF makes it block forever — the
+            # production hang. DEVNULL gives an immediate EOF so it never waits.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
         try:
             out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            # Fail-fast: kill the wedged process (don't orphan it) and surface a
+            # clear, actionable error instead of letting it run to the arq
+            # job_timeout and trigger pointless retries.
             proc.kill()
-            await proc.wait()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except (TimeoutError, asyncio.TimeoutError):  # pragma: no cover - hard kill
+                pass
             raise ProviderUnavailableError(
-                f"claude CLI timed out after {timeout}s"
+                f"claude CLI did not respond within {timeout:.0f}s and was killed — "
+                "the headless `claude` run is wedged (check the subscription token "
+                "and that the CLI can run non-interactively in this environment). "
+                "If this persists, use 'Claude (Anthropic API key)' or Gemini instead."
             ) from exc
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -284,6 +333,30 @@ async def _run_claude(
             f"claude CLI produced unexpected output: {out.strip()[:300]}"
         )
     return data
+
+
+def _seed_config_dir(config_dir: str) -> None:
+    """Pre-seed a minimal ``.claude.json`` marking onboarding/trust as done.
+
+    In CLI 2.1.x ``-p`` mode does not prompt for onboarding/trust even on an empty
+    config dir (verified in BƯỚC 0), but older/other builds may gate the first run
+    on these flags and block headless. Seeding them is cheap, harmless, and makes
+    the headless run robust across CLI versions. Best-effort: failures are ignored
+    (the CLI will create the file itself).
+    """
+    try:
+        path = os.path.join(config_dir, ".claude.json")
+        config = {
+            "hasCompletedOnboarding": True,
+            "bypassPermissionsModeAccepted": True,
+            "hasTrustDialogAccepted": True,
+            "autoUpdates": False,
+            "theme": "dark",
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(config, fh)
+    except OSError:  # pragma: no cover - non-fatal; CLI seeds its own config
+        pass
 
 
 def _parse_output(out: str) -> dict[str, Any] | None:

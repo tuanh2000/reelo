@@ -41,6 +41,14 @@ class WorkerSettings:
     on_startup = on_startup
     on_shutdown = on_shutdown
     max_jobs = get_settings().worker_max_jobs
+    # Per-job wall-clock cap (default 600s): long multi-chunk scripts can exceed
+    # arq's 300s default. The provider-level fail-fast (clients/claude_cli.py)
+    # ensures one wedged CLI call can't consume this whole budget.
+    job_timeout = get_settings().worker_job_timeout
+    # No arq-level auto-retry by default (max_tries=1): tasks retry internally and
+    # surface errors on the episode, so re-running a hung/failed job only
+    # multiplied the user's wait (the old 3×300s ≈ 15min) for nothing.
+    max_tries = get_settings().worker_max_tries
     # Module 2 serializes episodes (M2-8/M2-9); render concurrency is capped
     # inside the task body, not here.
 

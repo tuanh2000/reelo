@@ -84,6 +84,7 @@ def _patch_exec(monkeypatch, *, stdout: dict | str, stderr: str = "", returncode
     async def fake_exec(*argv, env=None, **kw):
         captured["argv"] = list(argv)
         captured["env"] = dict(env or {})
+        captured["kwargs"] = dict(kw)
         return _FakeProc(out_body, err_body, returncode)
 
     monkeypatch.setattr(claude_cli.asyncio, "create_subprocess_exec", fake_exec)
@@ -271,6 +272,88 @@ def _registry(tmp_path: Path) -> ServiceRegistry:
     path = tmp_path / "services.yaml"
     path.write_text(yaml_text, encoding="utf-8")
     return ServiceRegistry(path)
+
+
+# ---- headless robustness: stdin / config seed / fail-fast (BƯỚC 0) --------- #
+async def test_stdin_is_closed_devnull(monkeypatch):
+    """Regression for the production hang: stdin MUST be DEVNULL so the CLI never
+    blocks waiting for stdin data in ``-p`` mode."""
+    import asyncio as _asyncio
+
+    captured = _patch_exec(monkeypatch, stdout=_OK_RESULT)
+    await ClaudeCliClient(_CFG).write_script(
+        ScriptRequest(messages=[{"role": "user", "content": "x"}]), _ctx()
+    )
+    assert captured["kwargs"].get("stdin") == _asyncio.subprocess.DEVNULL
+
+
+async def test_config_dir_is_seeded_with_onboarding(monkeypatch):
+    """The isolated CLAUDE_CONFIG_DIR is pre-seeded so older CLI builds don't gate
+    the headless run on an onboarding/trust prompt."""
+    captured = _patch_exec(monkeypatch, stdout=_OK_RESULT)
+    await ClaudeCliClient(_CFG).write_script(
+        ScriptRequest(messages=[{"role": "user", "content": "x"}]), _ctx()
+    )
+    # The config dir is cleaned up after the call, so re-create + seed to assert
+    # the seed contents (the production path seeds the real temp dir before exec).
+    import tempfile as _tempfile
+
+    d = _tempfile.mkdtemp()
+    claude_cli._seed_config_dir(d)
+    seeded = json.loads(Path(d, ".claude.json").read_text())
+    assert seeded["hasCompletedOnboarding"] is True
+    assert seeded["bypassPermissionsModeAccepted"] is True
+    # and the env still points the CLI at an isolated config dir
+    assert captured["env"]["CLAUDE_CONFIG_DIR"].startswith(_tempfile.gettempdir())
+
+
+async def test_timeout_kills_process_and_raises_unavailable(monkeypatch):
+    """A wedged CLI (communicate never returns) must be killed and surfaced as
+    ProviderUnavailableError fast — NOT hang to the arq job timeout."""
+    import asyncio as _asyncio
+
+    killed = {"kill": False, "waited": False}
+
+    class _HangingProc:
+        returncode = None
+
+        async def communicate(self):
+            await _asyncio.sleep(3600)  # never returns within the call timeout
+
+        def kill(self):
+            killed["kill"] = True
+
+        async def wait(self):
+            killed["waited"] = True
+            return -9
+
+    async def fake_exec(*argv, env=None, **kw):
+        return _HangingProc()
+
+    monkeypatch.setattr(claude_cli.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda _b: "/usr/bin/claude")
+
+    with pytest.raises(ProviderUnavailableError) as exc:
+        await claude_cli._run_claude(
+            prompt="x",
+            token="sk-ant-oat01-x",
+            model="claude-sonnet-4-6",
+            binary="claude",
+            timeout=0.05,
+        )
+    assert not isinstance(exc.value, InvalidKeyError)  # not an auth error
+    assert killed["kill"] and killed["waited"]  # process reaped, not orphaned
+    assert "did not respond" in str(exc.value)
+
+
+def test_timeout_is_clamped_to_max_call_timeout():
+    """Even if services.yaml configures a large timeout, the per-call cap is
+    clamped so a wedged call can't eat the whole job_timeout."""
+    cfg = ServiceConfig(
+        provider_id="claude-cli",
+        raw={"tasks": {"write-script": {"timeout": 9999}}},
+    )
+    assert ClaudeCliClient(cfg)._timeout() == claude_cli._MAX_CALL_TIMEOUT
 
 
 async def test_registry_resolves_claude_cli(tmp_path):

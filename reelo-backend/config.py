@@ -86,6 +86,16 @@ class Settings(BaseSettings):
 
     # ---- Worker -------------------------------------------------------------
     worker_max_jobs: int = Field(default=10, alias="WORKER_MAX_JOBS")
+    # Arq per-job wall-clock timeout (seconds). A multi-chunk script (long
+    # episodes) can legitimately exceed arq's 300s default, so we raise it; the
+    # *provider* fail-fast (clients/claude_cli.py per-call cap) is what prevents a
+    # single wedged CLI call from eating this whole budget.
+    worker_job_timeout: int = Field(default=600, alias="WORKER_JOB_TIMEOUT")
+    # Total attempts per job. 1 = no auto-retry: tasks already do their own
+    # internal retries (e.g. Module 1's ≤3 parse retries) and surface errors on
+    # the episode, so an arq-level retry of a hung/failed job just multiplies the
+    # wait (the old 3×300s ≈ 15min) for no benefit.
+    worker_max_tries: int = Field(default=1, alias="WORKER_MAX_TRIES")
 
     # ---- OmniVoice (voice-clone microservice) -------------------------------
     # Base URL of the Reelo-hosted OmniVoice GPU microservice (see
