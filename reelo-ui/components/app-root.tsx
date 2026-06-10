@@ -158,27 +158,14 @@ export function App() {
       <div className="shell">
         <Sidebar route={route} nav={nav} />
         <div className="main">
-          <Topbar route={route} nav={nav} theme={dark ? "dark" : "light"} onToggleTheme={() => setDark((d) => !d)} />
-          {user && (
-            <div
-              style={{
-                position: "absolute",
-                top: 14,
-                right: 18,
-                zIndex: 30,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <span className="subtle" style={{ fontSize: 12.5 }}>
-                {user.email}
-              </span>
-              <button className="btn btn-secondary btn-sm" onClick={onLogout}>
-                <Icon name="log-out" size={14} /> Đăng xuất
-              </button>
-            </div>
-          )}
+          <Topbar
+            route={route}
+            nav={nav}
+            theme={dark ? "dark" : "light"}
+            onToggleTheme={() => setDark((d) => !d)}
+            user={user}
+            onLogout={onLogout}
+          />
           <div className="content" ref={contentRef}>
             <Screen
               key={route.name + (route.series?.id || "") + (route.episode?.id || "")}

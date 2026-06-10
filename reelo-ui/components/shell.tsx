@@ -129,11 +129,15 @@ export function Topbar({
   nav,
   theme,
   onToggleTheme,
+  user,
+  onLogout,
 }: {
   route: Route;
   nav: Nav;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  user?: { email: string } | null;
+  onLogout?: () => void;
 }) {
   const crumbs: { t: string; b?: boolean; onClick?: () => void }[] = [];
   if (route.name !== "dashboard") crumbs.push({ t: "Bảng điều khiển", onClick: () => nav({ name: "dashboard" }) });
@@ -199,7 +203,31 @@ export function Topbar({
           }}
         />
       </button>
-      <Avatar name="Minh Khôi" size={36} />
+      {user ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 4 }}>
+          <span
+            className="subtle"
+            title={user.email}
+            style={{
+              fontSize: 12.5,
+              maxWidth: 180,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {user.email}
+          </span>
+          <Avatar name={user.email} size={32} />
+          {onLogout && (
+            <button className="btn btn-secondary btn-sm" onClick={onLogout} title="Đăng xuất">
+              <Icon name="log-out" size={14} />
+            </button>
+          )}
+        </div>
+      ) : (
+        <Avatar name="U" size={36} />
+      )}
     </header>
   );
 }
