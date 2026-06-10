@@ -3,7 +3,7 @@
 // ===== Screen 7: Project Detail / Series Progress (ported from screen-project.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, EmptyState } from "@/components/ui";
+import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, EmptyState, ConfirmDialog } from "@/components/ui";
 import {
   PIPELINE,
   EP_STATUS,
@@ -19,7 +19,7 @@ import {
   type EpisodeStatus,
 } from "@/lib/data";
 import { DEMO_SERIES } from "@/lib/demo-fixtures";
-import { listSeries, getEpisode, renameSeries, ApiError } from "@/lib/api";
+import { listSeries, getEpisode, renameSeries, resetEpisode, ApiError } from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
   return (
@@ -77,9 +77,27 @@ function epAction(
   return { label: "Tiếp tục", icon: "arrow-right", variant: "primary", to: "workspace" };
 }
 
-function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series: Series; nav: Nav }) {
+function EpisodeRow({
+  ep,
+  idx,
+  series,
+  nav,
+  onReset,
+  resetting,
+}: {
+  ep: Episode;
+  idx: number;
+  series: Series;
+  nav: Nav;
+  onReset?: (ep: Episode) => void;
+  resetting?: boolean;
+}) {
   const st = EP_STATUS[ep.status];
   const act = epAction(ep);
+  // Reset is only meaningful once an episode has produced something — i.e. it is
+  // past a clean draft (any non-draft status, or a draft mid/post script gen).
+  const canReset =
+    !!onReset && (ep.status !== "draft" || (ep.scriptStatus != null && ep.scriptStatus !== "running"));
   return (
     <div className="card" style={{ boxShadow: "none", display: "flex", alignItems: "center", gap: 14, padding: 13 }}>
       <span
@@ -126,6 +144,18 @@ function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series
           )}
         </div>
       </div>
+      {canReset && (
+        <button
+          className="btn btn-ghost btn-sm"
+          title="Làm lại từ đầu (xóa kịch bản + ảnh/voice)"
+          aria-label="Làm lại từ đầu"
+          disabled={resetting}
+          onClick={() => onReset?.(ep)}
+          style={{ flex: "none", padding: "6px 8px", color: "#dc2626" }}
+        >
+          <Icon name={resetting ? "loader" : "rotate-ccw"} size={15} className={resetting ? "spin" : ""} />
+        </button>
+      )}
       <Button variant={act.variant} size="sm" icon={act.icon} onClick={() => nav({ name: act.to, series, episode: ep })}>
         {act.label}
       </Button>
@@ -281,6 +311,33 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
   // latest produce/publish progress. The demo fixture is only used when there is
   // no routed-in series AND we are in the offline demo.
   const [series, setSeries] = React.useState<Series>(route.series || DEMO_SERIES[0]);
+  const isDemo = !route.series;
+
+  // Reset ("Làm lại từ đầu") per episode — destructive, confirmed via dialog.
+  const [resetTarget, setResetTarget] = React.useState<Episode | null>(null);
+  const [resetting, setResetting] = React.useState(false);
+  const [resetError, setResetError] = React.useState<string | null>(null);
+  const doReset = async () => {
+    if (!resetTarget) return;
+    const target = resetTarget;
+    setResetting(true);
+    setResetError(null);
+    try {
+      if (!isDemo) await resetEpisode(series.id, target.id);
+      // Optimistically reflect the reset locally (back to clean draft).
+      setSeries((prev) => ({
+        ...prev,
+        episodes: prev.episodes.map((e) =>
+          e.id === target.id ? { ...e, status: "draft", scriptStatus: null } : e,
+        ),
+      }));
+      setResetTarget(null);
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : "Không thể làm lại tập này.");
+    } finally {
+      setResetting(false);
+    }
+  };
 
   // Refresh the episode list (titles/statuses) from the backend on mount AND
   // whenever the tab regains focus, so the per-episode badge ("đang viết kịch
@@ -358,7 +415,7 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
             </div>
             <SeriesTitle
               series={series}
-              isDemo={!route.series}
+              isDemo={isDemo}
               onRenamed={(name) => setSeries((prev) => ({ ...prev, name }))}
             />
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -451,7 +508,18 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {series.episodes.map((ep, i) => (
-          <EpisodeRow key={ep.id} ep={ep} idx={i} series={series} nav={nav} />
+          <EpisodeRow
+            key={ep.id}
+            ep={ep}
+            idx={i}
+            series={series}
+            nav={nav}
+            onReset={(e) => {
+              setResetError(null);
+              setResetTarget(e);
+            }}
+            resetting={resetting && resetTarget?.id === ep.id}
+          />
         ))}
         <button
           className="btn btn-ghost btn-md"
@@ -461,6 +529,28 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
           <Icon name="plus" size={17} /> Thêm tập mới vào series
         </button>
       </div>
+
+      <ConfirmDialog
+        open={resetTarget != null}
+        busy={resetting}
+        title="Làm lại tập này từ đầu?"
+        confirmLabel="Xóa & làm lại"
+        tone="danger"
+        onCancel={() => setResetTarget(null)}
+        onConfirm={() => void doReset()}
+        body={
+          <>
+            Hành động này sẽ <b>xóa vĩnh viễn kịch bản</b> cùng <b>mọi ảnh, giọng đọc,
+            video và thumbnail</b> đã tạo cho “{resetTarget?.title}”. Tập sẽ trở về bản
+            nháp và sẵn sàng viết lại từ đầu. Không thể hoàn tác.
+            {resetError && (
+              <div style={{ marginTop: 10, color: "#dc2626", display: "flex", gap: 6, alignItems: "center" }}>
+                <Icon name="alert-triangle" size={14} /> {resetError}
+              </div>
+            )}
+          </>
+        }
+      />
     </div>
   );
 }

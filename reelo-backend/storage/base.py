@@ -57,6 +57,15 @@ class ObjectStorage(ABC):
     async def delete(self, key: str) -> None: ...
 
     @abstractmethod
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete every object under ``prefix`` (recursive). Returns the count.
+
+        Used by the destructive episode reset to wipe ``projects/<user>/<episode>/``
+        (images/voice/final/thumbnails) so a later produce regenerates from scratch.
+        Idempotent: a missing prefix is a no-op (returns 0).
+        """
+
+    @abstractmethod
     async def signed_url(self, key: str, *, expires_in: int | None = None) -> str:
         """Return a time-limited URL the browser can fetch directly."""
 

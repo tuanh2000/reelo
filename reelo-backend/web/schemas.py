@@ -99,6 +99,19 @@ class EpisodeScriptResponse(BaseModel):
     episode: EpisodeSpec
 
 
+class EpisodeResetResponse(BaseModel):
+    """``POST /episodes/{id}/reset`` — the episode after a destructive reset.
+
+    ``episode`` is back to outline-only (no ``segments``, ``status="draft"``). The
+    counts report what was wiped (deleted gen_jobs + storage objects) so the UI /
+    logs can confirm the cleanup happened.
+    """
+
+    episode: EpisodeSpec
+    jobs_deleted: int = 0
+    assets_deleted: int = 0
+
+
 class EpisodeAssets(BaseModel):
     """Signed asset URLs for an assembled episode (review screen player + thumbs).
 

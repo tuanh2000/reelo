@@ -3,7 +3,7 @@
 // ===== Screen 5: Script Workspace — pipeline + editor + chat (ported from screen-workspace.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble, EmptyState, ErrorBox } from "@/components/ui";
+import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble, EmptyState, ErrorBox, ConfirmDialog } from "@/components/ui";
 import { PIPELINE, type Nav, type Route, type Series, type Episode, type GenJob, type ScriptSegment } from "@/lib/data";
 import {
   generateEpisodeScript,
@@ -11,6 +11,7 @@ import {
   startGeneration,
   pollGenerationDetail,
   retryChild,
+  resetEpisode,
   type CostEstimate,
   type EpisodeDetail,
   type SegmentSpec,
@@ -611,6 +612,35 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
     setScriptAttempt((n) => n + 1);
   };
 
+  // ---- Reset ("Làm lại từ đầu"): destructive — wipe script + assets, re-script ----
+  const [resetOpen, setResetOpen] = React.useState(false);
+  const [resetting, setResetting] = React.useState(false);
+  const doReset = async () => {
+    setResetting(true);
+    setProduceError(null);
+    try {
+      await resetEpisode(series.id, episode.id);
+      // Back to a clean draft: clear local produce/script state and re-run the
+      // mount effect, which kicks off a fresh lazy script gen.
+      setResetOpen(false);
+      setStage("edit");
+      setJobId(null);
+      setJobs([]);
+      setSegments(null);
+      setScriptError(null);
+      setProduceError(null);
+      setProduceStartedMs(null);
+      setScriptStartedMs(null);
+      setScriptPhase("loading");
+      setScriptAttempt((n) => n + 1);
+    } catch (e) {
+      setProduceError(e instanceof Error ? e.message : "Không thể làm lại tập này.");
+      setResetOpen(false);
+    } finally {
+      setResetting(false);
+    }
+  };
+
   // ---- Produce: poll the active job while producing (jobId from backend) ----
   // Elapsed is anchored to the parent's server started_at (re-synced each poll),
   // so a throttled background tab can't drift it and a remount can't reset it.
@@ -719,6 +749,17 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
           </div>
           <h2 style={{ fontSize: 22, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{episode.title}</h2>
         </div>
+        {/* Destructive reset: wipe script + assets and re-script from scratch. */}
+        <Button
+          variant="ghost"
+          size="md"
+          icon="rotate-ccw"
+          disabled={resetting}
+          onClick={() => setResetOpen(true)}
+          title="Xóa kịch bản + ảnh/voice đã tạo và làm lại từ đầu"
+        >
+          Làm lại từ đầu
+        </Button>
         {stage === "edit" ? (
           <Button
             variant="primary"
@@ -739,6 +780,23 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
           </Button>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetOpen}
+        busy={resetting}
+        title="Làm lại tập này từ đầu?"
+        confirmLabel="Xóa & làm lại"
+        tone="danger"
+        onCancel={() => setResetOpen(false)}
+        onConfirm={() => void doReset()}
+        body={
+          <>
+            Hành động này sẽ <b>xóa vĩnh viễn kịch bản</b> cùng <b>mọi ảnh, giọng đọc,
+            video và thumbnail</b> đã tạo cho “{episode.title}”. Tập sẽ trở về bản nháp
+            và được viết lại kịch bản mới. Không thể hoàn tác.
+          </>
+        }
+      />
 
       {produceError && (
         <div className="card" style={{ padding: 12, marginBottom: 14, color: "#dc2626", display: "flex", gap: 8 }}>

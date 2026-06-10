@@ -297,6 +297,27 @@ class EpisodeRepo:
         await self.s.flush()
         return ep
 
+    async def reset_to_draft(self, user_id: str, episode_id: str) -> Episode | None:
+        """Reset an episode row back to fresh draft (destructive — see reset endpoint).
+
+        Clears the produce/script artefacts tracked on the row so a later produce
+        run starts clean: status→``draft``, ``paths`` (asset keys + the resume
+        ``asset_manifest`` + ``script_status``/``script_error``/``script_started_at``)
+        and ``urls`` emptied, and ``image_curation`` dropped. The caller is
+        responsible for (a) clearing ``segments`` in ``spec_json`` and (b) deleting
+        the gen_jobs + storage assets. Scoped by ``user_id``; returns the row or
+        ``None`` when missing.
+        """
+        ep = await self.get(user_id, episode_id)
+        if ep is None:
+            return None
+        ep.status = "draft"
+        ep.paths = {}
+        ep.urls = {}
+        ep.image_curation = None
+        await self.s.flush()
+        return ep
+
     async def set_paths(
         self,
         user_id: str,
@@ -373,6 +394,24 @@ class GenJobRepo:
         self.s.add(row)
         await self.s.flush()
         return row
+
+    async def delete_for_episode(self, user_id: str, episode_id: str) -> int:
+        """Delete every gen_jobs row (parent + children) for an episode. Returns count.
+
+        Used by the destructive episode reset so a fresh produce seeds a clean job
+        tree. Children FK-cascade on ``parent_id``, but we delete by episode so a
+        parentless/orphan row is removed too. Scoped by ``user_id``.
+        """
+        res = await self.s.execute(
+            select(GenJobRow).where(
+                GenJobRow.episode_id == episode_id, GenJobRow.user_id == user_id
+            )
+        )
+        rows = list(res.scalars().all())
+        for row in rows:
+            await self.s.delete(row)
+        await self.s.flush()
+        return len(rows)
 
 
 class ApiKeyRepo:

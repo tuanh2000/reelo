@@ -96,6 +96,42 @@ async def update_episode_in_series(
     return spec
 
 
+async def reset_episode_to_outline(
+    session: AsyncSession, user_id: str, series_id: str, episode_id: str
+) -> EpisodeSpec | None:
+    """Strip an episode back to outline-only inside its series ``spec_json``.
+
+    Clears ``segments`` (the written script) and the lazy ``youtube`` meta but
+    KEEPS the outline identity the wizard produced: ``title`` / ``order`` /
+    ``desc`` / ``target_minutes`` (so "làm lại từ đầu" re-scripts the same episode,
+    not a blank one). Resets ``status`` to ``draft`` and mirrors that onto the
+    episode row. Returns the reset :class:`EpisodeSpec`, or ``None`` if the series
+    or episode is missing. The caller deletes assets / gen_jobs separately.
+    """
+    row = await SeriesRepo(session).get(user_id, series_id)
+    if row is None:
+        return None
+    spec = spec_from_row(row)
+    target = find_episode_in_spec(spec, episode_id)
+    if target is None:
+        return None
+    reset = EpisodeSpec(
+        episode_id=target.episode_id,
+        title=target.title,
+        order=target.order,
+        desc=target.desc,
+        target_minutes=target.target_minutes,
+        status="draft",
+        youtube=None,
+        segments=[],
+    )
+    spec.episodes = [reset if e.episode_id == episode_id else e for e in spec.episodes]
+    row.spec_json = spec.model_dump()
+    await EpisodeRepo(session).set_status(user_id, episode_id, "draft")
+    await session.flush()
+    return reset
+
+
 async def find_series_for_episode(
     session: AsyncSession, user_id: str, episode_id: str
 ) -> tuple[Series, SeriesSpec, EpisodeSpec] | None:
@@ -155,6 +191,7 @@ __all__ = [
     "find_episode_in_spec",
     "save_series_spec",
     "update_episode_in_series",
+    "reset_episode_to_outline",
     "find_series_for_episode",
     "episode_to_ui",
     "segments_to_ui",

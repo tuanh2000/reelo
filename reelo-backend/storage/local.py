@@ -73,6 +73,27 @@ class LocalObjectStorage(ObjectStorage):
 
         await asyncio.to_thread(_del)
 
+    async def delete_prefix(self, prefix: str) -> int:
+        def _del_tree() -> int:
+            base = self._path(prefix.rstrip("/"))
+            if not base.exists():
+                return 0
+            count = 0
+            if base.is_dir():
+                for p in sorted(base.rglob("*"), reverse=True):
+                    if p.is_file():
+                        p.unlink()
+                        count += 1
+                    elif p.is_dir():
+                        p.rmdir()
+                base.rmdir()
+            else:  # a single file matched the prefix
+                base.unlink()
+                count = 1
+            return count
+
+        return await asyncio.to_thread(_del_tree)
+
     async def signed_url(self, key: str, *, expires_in: int | None = None) -> str:
         # Dev: served by the app's /files route; no signing.
         return f"{self.base_url}/files/{quote(key)}"

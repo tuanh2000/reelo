@@ -79,6 +79,21 @@ class S3ObjectStorage(ObjectStorage):
         async with self._client() as c:
             await c.delete_object(Bucket=self.bucket, Key=key)
 
+    async def delete_prefix(self, prefix: str) -> int:
+        """List + batch-delete every object under ``prefix`` (paginated)."""
+        prefix = prefix.rstrip("/") + "/"
+        deleted = 0
+        async with self._client() as c:
+            paginator = c.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+                if not objs:
+                    continue
+                # S3 DeleteObjects caps at 1000 keys/request; a page is already ≤1000.
+                await c.delete_objects(Bucket=self.bucket, Delete={"Objects": objs})
+                deleted += len(objs)
+        return deleted
+
     async def signed_url(self, key: str, *, expires_in: int | None = None) -> str:
         async with self._client() as c:
             return await c.generate_presigned_url(

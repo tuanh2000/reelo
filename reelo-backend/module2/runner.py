@@ -25,6 +25,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from clients.base import CallContext, ImageRequest, ProviderUnavailableError, Task
 from clients.registry import ServiceRegistry, get_registry
@@ -38,6 +39,7 @@ from module2 import curation as curation_mod
 from module2 import jobs as jobmod
 from module2 import materialize as mat
 from module2 import render as renderer
+from module2 import resume as resume_mod
 from module2 import subtitles, thumbnail, voice
 from module2.materialize import ProjectLayout
 
@@ -125,12 +127,23 @@ async def run_images(
     registry: ServiceRegistry,
     concurrency: int = IMAGE_CONCURRENCY,
     curation: dict | None = None,
+    episode_id: str | None = None,
+    prev_manifest: dict | None = None,
 ) -> list[BaseException | None]:
     """Generate one PNG per segment in parallel (Semaphore-bounded).
 
     Each segment's image job is marked running→done/error individually. Returns a
     list parallel to segments: ``None`` on success, the exception on failure (so
     the caller can block render and mark the parent error, M2-7).
+
+    **Resume (idempotent, A):** before generating, each segment's content hash is
+    compared to the previous run's manifest (``prev_manifest``); if it matches AND
+    the asset is still in object storage, the cached file is downloaded into the
+    work folder and the child job is marked ``done`` immediately — NO provider call
+    (saving paid kie/eleven credit). A changed prompt/curation, a missing cache
+    file, or an unreadable manifest all fall through to a normal (re)generate.
+    ``ctx.extra["reused_images"]`` records the indices that were reused so the
+    orchestrator can decide whether the render itself can be reused.
 
     For web-* providers with a human ``curation`` blob (M2-12/M2-13) the segment's
     **chosen** candidate is downloaded (``download_chosen``) — a photo (image PNG)
@@ -161,11 +174,32 @@ async def run_images(
     credits: dict[int, dict] = {}
     # index -> {"media_type": "image"|"video", "path": Path}
     media_plan: dict[int, dict] = {}
+    reused: set[int] = set()
+    prev = prev_manifest or {}
 
     async def _one(seg, job_id: str) -> BaseException | None:
         await update_job(user_id, job_id, state="running", progress=jobmod.PROGRESS_START)
         img_out = lo.image_png(seg.index, seg.image_label)
         prompt_file = lo.image_txt(seg.index, seg.image_label)
+        # Resume: reuse the cached image/clip when unchanged + still in storage.
+        if episode_id is not None:
+            want = resume_mod.image_hash(series, seg, curation=curation)
+            kind = await resume_mod.reuse_segment_image(
+                user_id, episode_id, seg, lo,
+                want_hash=want, prev=prev, curation=curation,
+            )
+            if kind is not None:
+                media_plan[seg.index] = {
+                    "media_type": kind,
+                    "path": lo.media_mp4(seg.index, seg.image_label)
+                    if kind == "video"
+                    else img_out,
+                }
+                reused.add(seg.index)
+                await update_job(
+                    user_id, job_id, state="done", progress=jobmod.PROGRESS_DONE
+                )
+                return None
         async with sem:
             try:
                 # Curated path: download the user-chosen candidate for this segment
@@ -226,6 +260,7 @@ async def run_images(
     # Stash collected attribution + the media plan where the orchestrator reads them.
     ctx.extra["commons_credits"] = [credits[k] for k in sorted(credits)]
     ctx.extra["media_plan"] = media_plan
+    ctx.extra["reused_images"] = reused
     return errors
 
 
@@ -237,9 +272,40 @@ async def run_voice(
     user_id: str,
     *,
     registry: ServiceRegistry,
+    ep: EpisodeSpec | None = None,
+    episode_id: str | None = None,
+    prev_manifest: dict | None = None,
 ) -> voice.VoiceOutcome:
-    """Run the voice stage, updating the voice job row around it."""
+    """Run the voice stage, updating the voice job row around it.
+
+    **Resume (idempotent, A):** when the narration + voice config are unchanged
+    (hash match) AND ``voice/voice.mp3`` is still in storage, the cached mp3 is
+    downloaded into the work folder, its duration probed, and the voice child
+    marked ``done`` immediately — NO TTS call (saving ElevenLabs credit). Any
+    doubt → normal (re)synthesis.
+    """
     await update_job(user_id, voice_job_id, state="running", progress=jobmod.PROGRESS_START)
+    # Resume: reuse the cached voiceover when unchanged + still in storage.
+    if ep is not None and episode_id is not None:
+        want = resume_mod.voice_hash(series, ep)
+        if await resume_mod.reuse_voice(
+            user_id, episode_id, lo, want_hash=want, prev=prev_manifest or {}
+        ):
+            from module2 import ffmpeg
+
+            try:
+                duration = await ffmpeg.probe_duration(lo.voice_mp3)
+            except Exception as exc:  # noqa: BLE001 — bad cache → regenerate below
+                log.warning("resume: cached voice unreadable (%s); re-synthesizing", exc)
+            else:
+                if isinstance(ctx.extra, dict):
+                    ctx.extra["reused_voice"] = True
+                await update_job(
+                    user_id, voice_job_id, state="done", progress=jobmod.PROGRESS_DONE
+                )
+                return voice.VoiceOutcome(
+                    voice_mp3=lo.voice_mp3, duration_s=duration, parts=[], total_chars=0
+                )
     try:
         outcome = await voice.synth_voice(series, lo, ctx, registry=registry)
     except Exception as exc:  # noqa: BLE001
@@ -293,7 +359,7 @@ async def upload_project(user_id: str, episode_id: str, lo: ProjectLayout) -> di
 
 
 async def _save_episode_assets(
-    user_id: str, series_id: str, episode_id: str, paths: dict[str, str]
+    user_id: str, series_id: str, episode_id: str, paths: dict[str, Any]
 ) -> None:
     """Persist asset keys + flip status assets→assembled (via EpisodeRepo)."""
     async with session_scope() as session:
@@ -314,6 +380,22 @@ async def _load_curation(user_id: str, episode_id: str) -> dict | None:
     except Exception as exc:  # noqa: BLE001 — curation is best-effort
         log.warning("could not load image_curation for %s: %s", episode_id, exc)
         return None
+
+
+async def _load_prev_manifest(user_id: str, episode_id: str) -> dict:
+    """Read the previous run's asset-hash manifest (resume, A), or ``{}``.
+
+    Any read failure → ``{}`` so resume safely degrades to a full (re)generate
+    (never reuse an asset we cannot prove is current).
+    """
+    try:
+        async with session_scope() as session:
+            ep_row = await EpisodeRepo(session).get(user_id, episode_id)
+            paths = (ep_row.paths or {}) if ep_row is not None else {}
+        return resume_mod.read_manifest(paths)
+    except Exception as exc:  # noqa: BLE001 — resume manifest is best-effort
+        log.warning("could not load asset manifest for %s: %s", episode_id, exc)
+        return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -386,14 +468,24 @@ async def run_produce_episode(
     # providers / un-curated episodes (run_images then uses the auto path).
     curation = await _load_curation(user_id, episode_id)
 
+    # Resume (A): the previous run's asset-hash manifest. Each stage compares its
+    # current content hash to this and reuses the cached storage asset on a match
+    # (skipping paid kie/eleven calls). Empty {} on a first run / unreadable → full
+    # regenerate.
+    prev_manifest = await _load_prev_manifest(user_id, episode_id)
+
     # Voice ∥ N images.
     voice_task = asyncio.create_task(
-        run_voice(spec, lo, ctx, seeded.voice_id, user_id, registry=reg)
+        run_voice(
+            spec, lo, ctx, seeded.voice_id, user_id, registry=reg,
+            ep=ep, episode_id=episode_id, prev_manifest=prev_manifest,
+        )
     )
     images_task = asyncio.create_task(
         run_images(
             spec, ep, lo, ctx, seeded.image_ids, user_id, registry=reg,
             concurrency=IMAGE_CONCURRENCY, curation=curation,
+            episode_id=episode_id, prev_manifest=prev_manifest,
         )
     )
     voice_outcome, image_errors = await asyncio.gather(voice_task, images_task)
@@ -426,55 +518,88 @@ async def run_produce_episode(
     # Belt-and-braces: enforce the count invariant before render (media-aware).
     _verify_media_invariant(ep, lo, media_paths)
 
-    # Render (+ SRT folded in).
+    # Render (+ SRT folded in). Resume (A): render is CPU-only (no API spend), so
+    # it always re-runs UNLESS every input is unchanged — i.e. all images AND the
+    # voice were reused from cache — and the previous ``final.mp4`` is still in
+    # storage. In that case we just re-fetch the cached final/srt (re-uploaded
+    # below) and skip the encode. Any miss → full render.
     await update_job(
         user_id, seeded.render_id, state="running", progress=jobmod.PROGRESS_START
     )
-    try:
-        narrations = [s.narration for s in ep.segments]
-        await renderer.render_episode(
-            media_paths,
-            narrations,
-            lo.voice_mp3,
-            lo.final_mp4,
-            spec.image_style.aspect,
-            media_types=media_types,
-            music_path=lo.music_bg if lo.music_bg.exists() else None,
-            work_dir=lo.root / "clips",
-        )
-        subtitles.write_srt(narrations, voice_outcome.duration_s, lo.subs_srt)
-    except Exception as exc:  # noqa: BLE001
-        await update_job(
-            user_id, seeded.render_id, state="error",
-            progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
-        )
-        await update_job(
-            user_id, seeded.parent_id, state="error",
-            progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
-        )
-        raise
+    narrations = [s.narration for s in ep.segments]
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    reused_imgs = extra.get("reused_images") or set()
+    all_inputs_reused = (
+        bool(extra.get("reused_voice"))
+        and len(reused_imgs) == len(ep.segments)
+        and len(ep.segments) > 0
+    )
+    render_reused = False
+    if all_inputs_reused and await resume_mod.reuse_final(user_id, episode_id, lo):
+        await resume_mod.reuse_srt(user_id, episode_id, lo)
+        if not lo.subs_srt.exists():
+            subtitles.write_srt(narrations, voice_outcome.duration_s, lo.subs_srt)
+        render_reused = True
+        log.info("resume: reused cached final.mp4 (all inputs unchanged)")
+    if not render_reused:
+        try:
+            await renderer.render_episode(
+                media_paths,
+                narrations,
+                lo.voice_mp3,
+                lo.final_mp4,
+                spec.image_style.aspect,
+                media_types=media_types,
+                music_path=lo.music_bg if lo.music_bg.exists() else None,
+                work_dir=lo.root / "clips",
+            )
+            subtitles.write_srt(narrations, voice_outcome.duration_s, lo.subs_srt)
+        except Exception as exc:  # noqa: BLE001
+            await update_job(
+                user_id, seeded.render_id, state="error",
+                progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
+            )
+            await update_job(
+                user_id, seeded.parent_id, state="error",
+                progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
+            )
+            raise
     await update_job(
         user_id, seeded.render_id, state="done", progress=jobmod.PROGRESS_DONE
     )
 
-    # Thumbnails (best-effort; never blocks the episode).
+    # Thumbnails (best-effort; never blocks the episode). Resume (A): reuse the
+    # cached set when title + style are unchanged and they are still in storage.
     await update_job(
         user_id, seeded.thumbnail_id, state="running", progress=jobmod.PROGRESS_START
     )
-    try:
-        await thumbnail.generate_thumbnails(spec, ep.title, lo, ctx, registry=reg)
+    thumb_want = resume_mod.thumbnail_hash(spec, ep)
+    if await resume_mod.reuse_thumbnails(
+        user_id, episode_id, lo, want_hash=thumb_want, prev=prev_manifest
+    ):
+        log.info("resume: reused cached thumbnails (title + style unchanged)")
         await update_job(
             user_id, seeded.thumbnail_id, state="done", progress=jobmod.PROGRESS_DONE
         )
-    except Exception as exc:  # noqa: BLE001 — thumbnails optional
-        log.warning("thumbnails failed (non-blocking): %s", exc)
-        await update_job(
-            user_id, seeded.thumbnail_id, state="error",
-            progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
-        )
+    else:
+        try:
+            await thumbnail.generate_thumbnails(spec, ep.title, lo, ctx, registry=reg)
+            await update_job(
+                user_id, seeded.thumbnail_id, state="done", progress=jobmod.PROGRESS_DONE
+            )
+        except Exception as exc:  # noqa: BLE001 — thumbnails optional
+            log.warning("thumbnails failed (non-blocking): %s", exc)
+            await update_job(
+                user_id, seeded.thumbnail_id, state="error",
+                progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
+            )
 
-    # Upload + persist + status.
-    paths = await upload_project(user_id, episode_id, lo)
+    # Upload + persist + status. Rewrite the asset-hash manifest (resume, A) to the
+    # hashes that now correspond to the assets in storage, so the NEXT run can skip
+    # whatever stayed the same. Folded into ``paths`` (merged into the JSONB blob).
+    uploaded = await upload_project(user_id, episode_id, lo)
+    paths: dict[str, Any] = dict(uploaded)
+    paths[resume_mod.MANIFEST_KEY] = resume_mod.build_manifest(spec, ep, curation=curation)
     await _save_episode_assets(user_id, spec.series_id, episode_id, paths)
     await update_job(
         user_id, seeded.parent_id, state="done", progress=jobmod.PROGRESS_DONE

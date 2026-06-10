@@ -23,14 +23,15 @@ from db.keystore_backend import load_user_keystore
 from db.repository import ApiKeyRepo, EpisodeRepo, GenJobRepo
 from keystore import build_cipher_from_settings
 from models.jobs import GenJob
-from module1.persistence import find_series_for_episode
+from module1.persistence import find_series_for_episode, reset_episode_to_outline
 from module2 import curation as cur
-from storage import get_storage
+from storage import episode_prefix, get_storage
 from usage import UsageLogger
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     EpisodeAssets,
     EpisodeDetailResponse,
+    EpisodeResetResponse,
     EpisodeScriptResponse,
     GenerationLookup,
     ImageCandidatesResponse,
@@ -183,6 +184,60 @@ async def generate_episode_script(
         await EpisodeRepo(db).set_script_state(user_id, episode_id, "running")
         await enqueue_job("generate_script", user_id, episode_id)
     return EpisodeScriptResponse(episode=ep)
+
+
+@router.post("/{episode_id}/reset", response_model=EpisodeResetResponse)
+async def reset_episode(
+    episode_id: str, user_id: CurrentUser, db: DbSession
+) -> EpisodeResetResponse:
+    """Destructive "làm lại từ đầu": reset an episode to outline-only draft.
+
+    Wipes everything produced for the episode so the user can re-script + re-produce
+    fresh, scoped by ``user_id``:
+
+    1. **spec** — clears ``segments`` + ``youtube`` in the series ``spec_json``,
+       keeping the outline (title/order/desc/target_minutes); ``status`` → ``draft``.
+    2. **status / curation** — clears ``script_status``/``script_error``/
+       ``script_started_at`` and ``image_curation`` (in ``paths``/the row).
+    3. **jobs** — deletes the episode's gen_jobs (parent + children).
+    4. **storage** — deletes ``projects/<user>/<episode>/`` (images/voice/final/
+       thumbnails) AND the resume hash manifest (held in ``paths``, cleared in 2) so
+       a later produce can NOT reuse a stale image/voice for the new script.
+
+    404 if the episode is missing. Returns the reset episode + cleanup counts.
+    """
+    found = await find_series_for_episode(db, user_id, episode_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"episode {episode_id} not found"
+        )
+    series_row, spec, _ = found
+
+    # 3. Delete gen_jobs (parent + children) for a clean slate next produce.
+    jobs_deleted = await GenJobRepo(db).delete_for_episode(user_id, episode_id)
+
+    # 1. spec → outline-only draft. 2. Clear row-level paths/urls/curation +
+    #    script status (incl. the resume asset_manifest held in ``paths``).
+    reset = await reset_episode_to_outline(db, user_id, spec.series_id, episode_id)
+    if reset is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"episode {episode_id} not found"
+        )
+    await EpisodeRepo(db).reset_to_draft(user_id, episode_id)
+
+    # 4. Delete the episode's whole storage prefix (best-effort: the DB reset is the
+    #    source of truth; a storage hiccup must not leave the episode un-resettable).
+    assets_deleted = 0
+    try:
+        assets_deleted = await get_storage().delete_prefix(
+            episode_prefix(user_id, episode_id)
+        )
+    except Exception:  # noqa: BLE001 — storage cleanup is best-effort
+        assets_deleted = 0
+
+    return EpisodeResetResponse(
+        episode=reset, jobs_deleted=jobs_deleted, assets_deleted=assets_deleted
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -358,6 +358,107 @@ export function ErrorBox({
   );
 }
 
+// ---- Confirmation dialog (destructive actions: reset / delete) ----
+// A centered modal overlay with a title, body, and confirm/cancel buttons. Used
+// for destructive actions (e.g. "Làm lại từ đầu") so the user explicitly opts in.
+// Closes on backdrop click / Esc (cancel) unless `busy`. `tone="danger"` styles
+// the confirm button red. Renders nothing when `open` is false.
+export function ConfirmDialog({
+  open,
+  title,
+  body,
+  confirmLabel = "Xác nhận",
+  cancelLabel = "Hủy",
+  tone = "danger",
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  body: React.ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: "danger" | "brand";
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, busy, onCancel]);
+
+  if (!open) return null;
+  const danger = tone === "danger";
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={() => !busy && onCancel()}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        background: "color-mix(in oklab, #000 45%, transparent)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <Card
+        onClick={(e) => e.stopPropagation()}
+        style={{ padding: 24, maxWidth: 460, width: "100%", display: "flex", flexDirection: "column", gap: 14 }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          <span
+            style={{
+              width: 42,
+              height: 42,
+              borderRadius: 12,
+              background: danger ? "color-mix(in oklab,#dc2626 14%,transparent)" : "var(--brand-tint)",
+              color: danger ? "#dc2626" : "var(--brand)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: "none",
+            }}
+          >
+            <Icon name={danger ? "alert-triangle" : "help-circle"} size={22} />
+          </span>
+          <h2 style={{ fontSize: 18, margin: 0 }}>{title}</h2>
+        </div>
+        <div className="muted" style={{ fontSize: 14, lineHeight: 1.55 }}>
+          {body}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <Button variant="ghost" size="md" onClick={onCancel} disabled={busy}>
+            {cancelLabel}
+          </Button>
+          <button
+            className="btn btn-md"
+            disabled={busy}
+            onClick={onConfirm}
+            style={{
+              background: danger ? "#dc2626" : "var(--brand)",
+              color: "#fff",
+              opacity: busy ? 0.7 : 1,
+            }}
+          >
+            <Icon name={busy ? "loader" : danger ? "trash-2" : "check"} size={18} className={busy ? "spin" : ""} />
+            <span className="btn-label">{busy ? "Đang xử lý…" : confirmLabel}</span>
+          </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 // ---- Centered empty state (e.g. a screen reached with no active series) ----
 export function EmptyState({
   icon = "folder-open",

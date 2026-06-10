@@ -245,6 +245,36 @@ export async function generateEpisodeScript(episodeId: string): Promise<EpisodeS
   return data.episode;
 }
 
+/** Result of a destructive episode reset ("Làm lại từ đầu"). */
+export interface ResetResult {
+  episode: EpisodeSpec;
+  jobsDeleted: number;
+  assetsDeleted: number;
+}
+/**
+ * Reset an episode to outline-only draft (DESTRUCTIVE). Wipes the script
+ * (segments), every generated asset (images/voice/final/thumbnails + the resume
+ * hash manifest), the gen_jobs, and the image curation; status → `draft`. After
+ * this, reopening the workspace re-scripts + lets the user produce fresh. The
+ * `seriesId` arg keeps the call shape parallel to the other episode mutations
+ * even though the backend resolves the series from the episode id (user-scoped).
+ */
+export async function resetEpisode(
+  seriesId: string,
+  episodeId: string,
+): Promise<ResetResult> {
+  const data = await request<{
+    episode: EpisodeSpec;
+    jobs_deleted?: number;
+    assets_deleted?: number;
+  }>(`/episodes/${episodeId}/reset`, { method: "POST" });
+  return {
+    episode: data.episode,
+    jobsDeleted: data.jobs_deleted ?? 0,
+    assetsDeleted: data.assets_deleted ?? 0,
+  };
+}
+
 /** Signed asset URLs for an assembled episode (review player + thumbnails). */
 export interface EpisodeAssets {
   videoUrl: string | null;
