@@ -261,3 +261,51 @@ export function ChatBubble({ role, children }: { role: "ai" | "user"; children: 
     </div>
   );
 }
+
+// ---- Centered empty state (e.g. a screen reached with no active series) ----
+export function EmptyState({
+  icon = "folder-open",
+  title,
+  desc,
+  actionLabel,
+  onAction,
+}: {
+  icon?: string;
+  title: string;
+  desc?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 360 }}>
+      <Card style={{ padding: 32, maxWidth: 420, textAlign: "center" }}>
+        <span
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 16,
+            background: "var(--brand-tint)",
+            color: "var(--brand)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 14,
+          }}
+        >
+          <Icon name={icon} size={26} />
+        </span>
+        <h2 style={{ fontSize: 19, marginBottom: 6 }}>{title}</h2>
+        {desc && (
+          <p className="muted" style={{ fontSize: 14, lineHeight: 1.5, marginBottom: actionLabel ? 18 : 0 }}>
+            {desc}
+          </p>
+        )}
+        {actionLabel && onAction && (
+          <Button variant="primary" size="md" icon="layout-dashboard" onClick={onAction}>
+            {actionLabel}
+          </Button>
+        )}
+      </Card>
+    </div>
+  );
+}

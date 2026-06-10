@@ -5,7 +5,8 @@
 import React from "react";
 import { Icon, Badge, Button, Card, Progress, Placeholder, Segmented } from "@/components/ui";
 import { Logo3D } from "@/components/logo";
-import { SERIES, EP_STATUS, DEMO_FALLBACK, skillOf, provName, pubCount, type Nav, type Series } from "@/lib/data";
+import { EP_STATUS, DEMO_FALLBACK, skillOf, provName, pubCount, type Nav, type Series } from "@/lib/data";
+import { DEMO_SERIES } from "@/lib/demo-fixtures";
 import { listSeries } from "@/lib/api";
 
 function FeatureChip({ icon, children }: { icon: string; children: React.ReactNode }) {
@@ -192,10 +193,10 @@ function SeriesCard({ s, nav, delay }: { s: Series; nav: Nav; delay: string }) {
 }
 
 export function Dashboard({ nav }: { nav: Nav }) {
-  // Real series from GET /series. In the offline mock demo
-  // (NEXT_PUBLIC_REQUIRE_AUTH=false) we seed with the static SERIES so the UI is
-  // usable without a backend; prod starts empty and shows whatever the API returns.
-  const [series, setSeries] = React.useState<Series[]>(DEMO_FALLBACK ? SERIES : []);
+  // Real series from GET /series. Only in the offline demo
+  // (DEMO_FALLBACK === true) do we seed with sample fixtures so the UI is usable
+  // without a backend; prod starts empty and shows whatever the API returns.
+  const [series, setSeries] = React.useState<Series[]>(DEMO_FALLBACK ? DEMO_SERIES : []);
   const [loading, setLoading] = React.useState(!DEMO_FALLBACK);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -210,9 +211,9 @@ export function Dashboard({ nav }: { nav: Nav }) {
       })
       .catch((e) => {
         if (!alive) return;
-        // Offline demo: keep the static seed; prod: surface the error.
+        // Offline demo: keep the sample fixtures; prod: surface the error.
         if (DEMO_FALLBACK) {
-          setSeries(SERIES);
+          setSeries(DEMO_SERIES);
         } else {
           setError(e instanceof Error ? e.message : "Không tải được danh sách series");
           setSeries([]);

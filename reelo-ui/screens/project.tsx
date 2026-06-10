@@ -3,12 +3,12 @@
 // ===== Screen 7: Project Detail / Series Progress (ported from screen-project.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill } from "@/components/ui";
+import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, EmptyState } from "@/components/ui";
 import {
-  SERIES,
   PIPELINE,
   EP_STATUS,
   PROVIDERS,
+  DEMO_FALLBACK,
   skillOf,
   provName,
   pubCount,
@@ -18,6 +18,7 @@ import {
   type Episode,
   type EpisodeStatus,
 } from "@/lib/data";
+import { DEMO_SERIES } from "@/lib/demo-fixtures";
 import { listSeries } from "@/lib/api";
 
 function MiniSteps({ step }: { step: number }) {
@@ -90,11 +91,30 @@ function EpisodeRow({ ep, idx, series, nav }: { ep: Episode; idx: number; series
 }
 
 export function ProjectScreen({ nav, route }: { nav: Nav; route: Route }) {
+  // Project detail needs a concrete series. In prod it is always routed in from
+  // the dashboard; with no series we show an empty state (never a mock series).
+  // The offline demo (DEMO_FALLBACK) may seed a sample fixture so the screen is
+  // browsable with no backend.
+  if (!route.series && !DEMO_FALLBACK) {
+    return (
+      <EmptyState
+        icon="folder-open"
+        title="Chưa chọn series"
+        desc="Hãy mở một series từ Bảng điều khiển để xem chi tiết."
+        actionLabel="Về Bảng điều khiển"
+        onAction={() => nav({ name: "dashboard" })}
+      />
+    );
+  }
+  return <ProjectInner nav={nav} route={route} />;
+}
+
+function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
   // Start from the series handed in by the dashboard; refresh its episode list
   // (titles/statuses) from the backend on mount so the project view reflects the
-  // latest produce/publish progress. Falls back to the static seed only when no
-  // series was routed in (offline demo).
-  const [series, setSeries] = React.useState<Series>(route.series || SERIES[0]);
+  // latest produce/publish progress. The demo fixture is only used when there is
+  // no routed-in series AND we are in the offline demo.
+  const [series, setSeries] = React.useState<Series>(route.series || DEMO_SERIES[0]);
 
   React.useEffect(() => {
     if (!route.series) return; // demo / no real series → keep seed

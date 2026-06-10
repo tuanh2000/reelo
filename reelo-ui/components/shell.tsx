@@ -5,7 +5,7 @@
 import React from "react";
 import { Icon, Badge, Button, Avatar, Progress } from "./ui";
 import { Wordmark } from "./logo";
-import { SERIES, type Nav, type Route } from "@/lib/data";
+import { type Nav, type Route } from "@/lib/data";
 
 function NavItem({
   icon,
@@ -13,6 +13,7 @@ function NavItem({
   active,
   badge,
   disabled,
+  title,
   onClick,
 }: {
   icon: string;
@@ -20,12 +21,14 @@ function NavItem({
   active?: boolean;
   badge?: string | null;
   disabled?: boolean;
+  title?: string;
   onClick?: () => void;
 }) {
   return (
     <button
       className={`nav-item ${active ? "is-active" : ""}`}
       disabled={disabled}
+      title={disabled ? title : undefined}
       style={disabled ? { opacity: 0.5, cursor: "default" } : undefined}
       onClick={disabled ? undefined : onClick}
     >
@@ -42,6 +45,12 @@ function NavItem({
 
 export function Sidebar({ route, nav }: { route: Route; nav: Nav }) {
   const n = route.name;
+  // Screens that operate on a specific series. Without an active series there is
+  // nothing real to open, so these stay disabled (we never fall back to a mock
+  // series). They light up once the user opens a series from the dashboard.
+  const series = route.series;
+  const noSeries = !series;
+  const needSeriesTitle = "Hãy mở một series từ Bảng điều khiển trước";
   return (
     <aside className="sidebar">
       <div className="side-brand">
@@ -66,16 +75,18 @@ export function Sidebar({ route, nav }: { route: Route; nav: Nav }) {
         icon="folder-open"
         label="Chi tiết series"
         active={n === "project"}
-        badge={route.series ? "đang mở" : null}
-        onClick={() => nav({ name: "project", series: route.series || SERIES[0] })}
+        badge={series ? "đang mở" : null}
+        disabled={noSeries}
+        title={needSeriesTitle}
+        onClick={() => series && nav({ name: "project", series })}
       />
-      <NavItem icon="pen-line" label="Xưởng kịch bản" active={n === "workspace"} onClick={() => nav({ name: "workspace", series: route.series || SERIES[0] })} />
-      <NavItem icon="youtube" label="Duyệt & Xuất bản" active={n === "review"} onClick={() => nav({ name: "review", series: route.series || SERIES[0] })} />
+      <NavItem icon="pen-line" label="Xưởng kịch bản" active={n === "workspace"} disabled={noSeries} title={needSeriesTitle} onClick={() => series && nav({ name: "workspace", series })} />
+      <NavItem icon="youtube" label="Duyệt & Xuất bản" active={n === "review"} disabled={noSeries} title={needSeriesTitle} onClick={() => series && nav({ name: "review", series })} />
 
       <div className="side-section">Cấu hình</div>
       <NavItem icon="bot" label="Cấu hình AI" active={n === "settings"} onClick={() => nav({ name: "settings" })} />
-      <NavItem icon="sliders-horizontal" label="Cấu hình series" active={n === "setup"} onClick={() => nav({ name: "setup", series: route.series || SERIES[0] })} />
-      <NavItem icon="palette" label="Style Studio" active={n === "style"} onClick={() => nav({ name: "style", series: route.series || SERIES[0] })} />
+      <NavItem icon="sliders-horizontal" label="Cấu hình series" active={n === "setup"} disabled={noSeries} title={needSeriesTitle} onClick={() => series && nav({ name: "setup", series })} />
+      <NavItem icon="palette" label="Style Studio" active={n === "style"} disabled={noSeries} title={needSeriesTitle} onClick={() => series && nav({ name: "style", series })} />
       <NavItem icon="library" label="Video đã xuất bản" disabled badge="Sắp có" />
 
       <div style={{ flex: 1 }} />

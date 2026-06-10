@@ -1,7 +1,9 @@
-// ===== Mock data + types for Reelo Studio =====
-// All UI copy is in Vietnamese. This is FRONTEND mock data only — when the
-// backend is wired up, replace these with data fetched from the API (see
-// lib/api.ts for the stubbed endpoints).
+// ===== Types + static catalogs for Reelo Studio =====
+// All UI copy is in Vietnamese. This file holds shared TYPES, display catalogs
+// (SKILLS/PROVIDERS — labels rendered in the UI, mirroring services.yaml) and
+// derived helpers. It contains NO business mock data: real series/episodes/jobs
+// come from the API (lib/api.ts). Demo-only sample data lives in
+// lib/demo-fixtures.ts and is gated behind DEMO_FALLBACK at every call site.
 
 // Matches GET /providers (reelo-backend ProviderOption). `cost_tier` is whether
 // the provider costs money; `requires_key` is whether the user must supply a
@@ -132,11 +134,13 @@ export interface Route {
 
 export type Nav = (r: Route) => void;
 
-// When NEXT_PUBLIC_REQUIRE_AUTH=false (offline mock demo, no backend) the
-// create-series screens fall back to the static SERIES/seed data instead of
-// failing on network errors. Prod (default) always hits the real API.
+// Offline-demo switch. ONLY true when a developer explicitly opts out of auth
+// (NEXT_PUBLIC_REQUIRE_AUTH=false) to browse the UI with no backend. In every
+// other case — including prod, where the env var is unset — it is FALSE, so no
+// demo fixture (lib/demo-fixtures.ts) is ever seeded. Default = false.
 export const DEMO_FALLBACK =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_REQUIRE_AUTH) === "false";
+  typeof process !== "undefined" &&
+  process.env.NEXT_PUBLIC_REQUIRE_AUTH === "false";
 
 export const SKILLS: Skill[] = [
   {
@@ -244,84 +248,6 @@ export const EP_STATUS: Record<EpisodeStatus, { label: string; color: string; st
   assembled: { label: "Đã dựng", color: "#8b5cf6", step: 3 },
   published: { label: "Đã xuất bản", color: "#16a34a", step: 4 },
 };
-
-export const SERIES: Series[] = [
-  {
-    id: "s1",
-    name: "Bí ẩn các tôn giáo cổ đại",
-    topic: "Tôn giáo & Lịch sử",
-    skill: "religion",
-    providers: { script: "claude", image: "gemini", voice: "eleven" },
-    cover: "Đền thờ cổ, ánh sáng vàng",
-    episodes: [
-      { id: "e1", title: "Nguồn gốc của các vị thần", status: "published", dur: "9:42", views: "12K" },
-      { id: "e2", title: "Đa thần giáo Lưỡng Hà", status: "published", dur: "11:08", views: "8.3K" },
-      { id: "e3", title: "Tôn giáo Ai Cập cổ đại", status: "assembled", dur: "10:21" },
-      { id: "e4", title: "Bí ẩn các giáo phái Hy Lạp", status: "assets" },
-      { id: "e5", title: "Hỏa giáo & Zoroaster", status: "scripted" },
-      { id: "e6", title: "Tín ngưỡng La Mã sơ khai", status: "draft" },
-      { id: "e7", title: "Sự trỗi dậy của độc thần giáo", status: "draft" },
-      { id: "e8", title: "Di sản còn lại ngày nay", status: "draft" },
-    ],
-  },
-  {
-    id: "s2",
-    name: "Đế chế La Mã: Trỗi dậy & Sụp đổ",
-    topic: "Lịch sử La Mã",
-    skill: "story",
-    providers: { script: "chatgpt", image: "kie", voice: "hf" },
-    cover: "Đấu trường La Mã lúc hoàng hôn",
-    episodes: [
-      { id: "e1", title: "Lập quốc bên dòng Tiber", status: "published", dur: "8:55", views: "21K" },
-      { id: "e2", title: "Cộng hòa & những cuộc chiến", status: "published", dur: "12:30", views: "15K" },
-      { id: "e3", title: "Caesar vượt sông Rubicon", status: "published", dur: "13:12", views: "31K" },
-      { id: "e4", title: "Augustus & thời hoàng kim", status: "assembled" },
-      { id: "e5", title: "Khủng hoảng thế kỷ III", status: "scripted" },
-      { id: "e6", title: "Sự sụp đổ của phương Tây", status: "draft" },
-    ],
-  },
-  {
-    id: "s3",
-    name: "Vũ trụ trong 5 phút",
-    topic: "Khoa học vũ trụ",
-    skill: "explain",
-    providers: { script: "gemini", image: "gemini", voice: "edge" },
-    cover: "Thiên hà xoáy, tông xanh tím",
-    episodes: [
-      { id: "e1", title: "Lỗ đen thực sự là gì?", status: "scripted" },
-      { id: "e2", title: "Vì sao bầu trời tối?", status: "draft" },
-      { id: "e3", title: "Vật chất tối quanh ta", status: "draft" },
-      { id: "e4", title: "Sự sống ngoài Trái Đất", status: "draft" },
-    ],
-  },
-];
-
-// Outline produced by the chat wizard (screen 2 demo state)
-export const WIZARD_SEED: OutlineItem[] = [
-  { id: "w1", title: "Tập 1 — Phật giáo: Con đường trung đạo", desc: "Bối cảnh ra đời, Tứ diệu đế, ảnh hưởng tới châu Á.", pick: true },
-  { id: "w2", title: "Tập 2 — Ấn Độ giáo: Vạn thần và luân hồi", desc: "Hệ thống thần linh, nghiệp báo, các trường phái.", pick: true },
-  { id: "w3", title: "Tập 3 — Do Thái giáo: Giao ước cổ xưa", desc: "Lịch sử dân tộc, kinh Torah, truyền thống.", pick: true },
-  { id: "w4", title: "Tập 4 — Kitô giáo lan tỏa toàn cầu", desc: "Từ một giáo phái nhỏ đến tôn giáo lớn nhất thế giới.", pick: true },
-  { id: "w5", title: "Tập 5 — Hồi giáo: Năm trụ cột", desc: "Nguồn gốc, kinh Quran, sự bành trướng.", pick: false },
-];
-
-// Script segments for the workspace editor (screen 3 demo)
-export const SCRIPT_SEGMENTS: ScriptSegment[] = [
-  { id: "seg1", text: "Bốn nghìn năm trước, giữa hai con sông Tigris và Euphrates, những con người đầu tiên ngước nhìn bầu trời và đặt ra một câu hỏi vẫn ám ảnh chúng ta đến tận hôm nay: ai đã tạo ra tất cả những điều này?", img: "Cảnh bình minh trên đồng bằng Lưỡng Hà" },
-  { id: "seg2", text: "Người Sumer tin rằng vũ trụ được cai quản bởi hàng trăm vị thần — mỗi dòng sông, mỗi cơn bão, mỗi mùa gặt đều có một đấng linh thiêng trông coi.", img: "Phù điêu các vị thần Sumer" },
-  { id: "seg3", text: "Đứng đầu là Anu, vị thần bầu trời. Bên cạnh ngài là Enlil của gió bão, và Enki — vị thần của nước ngọt và trí tuệ, người được cho là đã ban cho loài người nền văn minh.", img: "Tượng thần Anu uy nghi" },
-  { id: "seg4", text: "Nhưng các vị thần không hề xa cách. Trong những ngôi đền ziggurat khổng lồ, con người dâng lễ vật mỗi ngày, vì họ tin rằng sự sống còn của cả thành bang phụ thuộc vào lòng thành ấy.", img: "Đền ziggurat về đêm có lửa" },
-];
-
-// Generation jobs (screen 3 progress demo)
-export const GEN_JOBS: GenJob[] = [
-  { id: "j-voice", name: "Tổng hợp giọng đọc", icon: "mic", state: "done", progress: 100 },
-  { id: "j-img1", name: "Ảnh đoạn 1", icon: "image", state: "done", progress: 100 },
-  { id: "j-img2", name: "Ảnh đoạn 2", icon: "image", state: "done", progress: 100 },
-  { id: "j-img3", name: "Ảnh đoạn 3", icon: "image", state: "running", progress: 64 },
-  { id: "j-img4", name: "Ảnh đoạn 4", icon: "image", state: "queued", progress: 0 },
-  { id: "j-render", name: "Render video .mp4", icon: "film", state: "queued", progress: 0 },
-];
 
 // ---- Derived helpers used across screens ----
 export function skillOf(id: string): Skill {

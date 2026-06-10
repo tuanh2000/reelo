@@ -5,7 +5,8 @@
 import React from "react";
 import { Icon, Badge, Button, Card, ChatBubble } from "@/components/ui";
 import { MiniMark } from "@/components/logo";
-import { DEMO_FALLBACK, WIZARD_SEED, type Nav, type OutlineItem, type SeriesDraft } from "@/lib/data";
+import { DEMO_FALLBACK, type Nav, type OutlineItem, type SeriesDraft } from "@/lib/data";
+import { DEMO_WIZARD_OUTLINE } from "@/lib/demo-fixtures";
 import { sendWizardMessage, getProviderSettings, ApiError } from "@/lib/api";
 
 interface Msg {
@@ -178,7 +179,7 @@ export function WizardScreen({ nav }: { nav: Nav }) {
   // usable with no backend. Prod starts from a single greeting and lets the real
   // wizard LLM (POST /wizard/message) drive both the reply and the outline.
   const [msgs, setMsgs] = React.useState<Msg[]>(DEMO_FALLBACK ? WIZ_SEED_MSGS : [WIZ_GREETING]);
-  const [outline, setOutline] = React.useState<OutlineItem[]>(DEMO_FALLBACK ? WIZARD_SEED : []);
+  const [outline, setOutline] = React.useState<OutlineItem[]>(DEMO_FALLBACK ? DEMO_WIZARD_OUTLINE : []);
   const [name, setName] = React.useState("Các tôn giáo lớn của thế giới");
   const [input, setInput] = React.useState("");
   const [typing, setTyping] = React.useState(false);

@@ -14,8 +14,8 @@
 // workspace producing view.
 
 import React from "react";
-import { Icon, Button, Card, Badge } from "@/components/ui";
-import { SERIES, type Nav, type Route } from "@/lib/data";
+import { Icon, Button, Card, Badge, EmptyState } from "@/components/ui";
+import { type Nav, type Route, type Series, type Episode } from "@/lib/data";
 import {
   getImageCandidates,
   saveImageSelection,
@@ -241,8 +241,24 @@ function SegmentBlock({
 }
 
 export function ImageSelectScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
-  const episode =
+  // This screen curates media for a real episode; without a series there is
+  // nothing to curate, so we show an empty state rather than mock data.
+  if (!route.series) {
+    return (
+      <EmptyState
+        icon="image"
+        title="Chưa chọn series"
+        desc="Hãy mở một series từ Bảng điều khiển để chọn ảnh cho tập."
+        actionLabel="Về Bảng điều khiển"
+        onAction={() => nav({ name: "dashboard" })}
+      />
+    );
+  }
+  return <ImageSelectInner nav={nav} route={route} series={route.series} />;
+}
+
+function ImageSelectInner({ nav, route, series }: { nav: Nav; route: Route; series: Series }) {
+  const episode: Episode =
     route.episode || series.episodes.find((e) => e.status !== "published") || series.episodes[0];
 
   const [segments, setSegments] = React.useState<SegmentCandidates[] | null>(null);

@@ -3,8 +3,8 @@
 // ===== Screen 6: Final Review & Publish (ported from screen-review.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, Segmented } from "@/components/ui";
-import { SERIES, type Nav, type Route } from "@/lib/data";
+import { Icon, Badge, Button, Card, Progress, Placeholder, Segmented, EmptyState } from "@/components/ui";
+import { type Nav, type Route, type Series, type Episode } from "@/lib/data";
 import { getEpisode, publishToYouTube, type EpisodeDetail, type ExportResult } from "@/lib/api";
 
 // Real <video> player when a signed final.mp4 URL is available; otherwise a
@@ -115,8 +115,27 @@ function asTags(v: unknown): string[] {
 }
 
 export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
-  const episode = route.episode || series.episodes[2];
+  // Publishing a real episode needs a real series; otherwise show an empty state
+  // instead of mock data.
+  if (!route.series) {
+    return (
+      <EmptyState
+        icon="youtube"
+        title="Chưa chọn series"
+        desc="Hãy mở một series từ Bảng điều khiển để duyệt và xuất bản tập."
+        actionLabel="Về Bảng điều khiển"
+        onAction={() => nav({ name: "dashboard" })}
+      />
+    );
+  }
+  return <ReviewInner nav={nav} route={route} series={route.series} />;
+}
+
+function ReviewInner({ nav, route, series }: { nav: Nav; route: Route; series: Series }) {
+  const episode: Episode =
+    route.episode ||
+    series.episodes.find((e) => e.status === "assembled" || e.status === "published") ||
+    series.episodes[0];
   const [stage, setStage] = React.useState<"idle" | "uploading" | "done">("idle");
   const [thumb, setThumb] = React.useState(0);
   const [vis, setVis] = React.useState<"public" | "unlisted" | "private">("public");
@@ -308,7 +327,13 @@ export function ReviewScreen({ nav, route }: { nav: Nav; route: Route }) {
                 </button>
               ))}
             </div>
-            <button className="btn btn-secondary btn-sm" style={{ marginTop: 10, fontSize: 12.5 }}>
+            {/* Generate more thumbnails — no backend endpoint yet. */}
+            <button
+              className="btn btn-secondary btn-sm"
+              style={{ marginTop: 10, fontSize: 12.5, opacity: 0.5, cursor: "default" }}
+              title="Sắp có"
+              disabled
+            >
               <Icon name="wand-sparkles" size={14} /> Tạo thêm bằng AI
             </button>
           </Card>

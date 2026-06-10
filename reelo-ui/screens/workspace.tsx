@@ -3,8 +3,8 @@
 // ===== Screen 5: Script Workspace — pipeline + editor + chat (ported from screen-workspace.jsx) =====
 
 import React from "react";
-import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble } from "@/components/ui";
-import { SERIES, PIPELINE, type Nav, type Route, type GenJob, type ScriptSegment } from "@/lib/data";
+import { Icon, Badge, Button, Card, Progress, Placeholder, StatusPill, Segmented, ChatBubble, EmptyState } from "@/components/ui";
+import { PIPELINE, type Nav, type Route, type Series, type Episode, type GenJob, type ScriptSegment } from "@/lib/data";
 import {
   generateEpisodeScript,
   getEpisode,
@@ -100,13 +100,14 @@ function SegmentCard({ seg, idx }: { seg: ScriptSegment; idx: number }) {
         </span>
         <span style={{ fontWeight: 700, fontSize: 13.5 }}>Đoạn {idx + 1}</span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          <button className="icon-btn" style={{ width: 30, height: 30 }} title="Tạo lại văn bản">
+          {/* Per-segment regenerate / preview / options — no backend endpoint yet. */}
+          <button className="icon-btn" style={{ width: 30, height: 30, opacity: 0.5, cursor: "default" }} title="Tạo lại văn bản · Sắp có" disabled>
             <Icon name="refresh-cw" size={15} />
           </button>
-          <button className="icon-btn" style={{ width: 30, height: 30 }} title="Nghe thử giọng đọc">
+          <button className="icon-btn" style={{ width: 30, height: 30, opacity: 0.5, cursor: "default" }} title="Nghe thử giọng đọc · Sắp có" disabled>
             <Icon name="volume-2" size={15} />
           </button>
-          <button className="icon-btn" style={{ width: 30, height: 30 }} title="Thêm tùy chọn">
+          <button className="icon-btn" style={{ width: 30, height: 30, opacity: 0.5, cursor: "default" }} title="Thêm tùy chọn · Sắp có" disabled>
             <Icon name="more-horizontal" size={15} />
           </button>
         </div>
@@ -121,7 +122,13 @@ function SegmentCard({ seg, idx }: { seg: ScriptSegment; idx: number }) {
         />
         <div>
           <Placeholder label={seg.img} style={{ width: "100%", height: 95 }} />
-          <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, fontSize: 12.5 }}>
+          {/* Per-segment image regen — no backend endpoint yet. */}
+          <button
+            className="btn btn-secondary btn-sm"
+            style={{ width: "100%", marginTop: 8, fontSize: 12.5, opacity: 0.5, cursor: "default" }}
+            title="Sắp có"
+            disabled
+          >
             <Icon name="wand-sparkles" size={14} /> Tạo lại ảnh
           </button>
         </div>
@@ -249,16 +256,17 @@ function ProducingView({
         )}
       </div>
 
-      <div className="card" style={{ padding: 16 }}>
+      {/* Voice preview player — no streaming endpoint yet, so it is disabled. */}
+      <div className="card" style={{ padding: 16, opacity: 0.6 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <Icon name="music-2" size={17} style={{ color: "var(--brand)" }} />
           <span style={{ fontWeight: 700, fontSize: 14 }}>Nghe thử giọng đọc</span>
-          <Badge tone="green" className="ml-auto" style={{ marginLeft: "auto" }}>
-            ElevenLabs
+          <Badge tone="neutral" className="ml-auto" style={{ marginLeft: "auto" }}>
+            Sắp có
           </Badge>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="btn btn-primary" style={{ width: 42, height: 42, borderRadius: 999, padding: 0 }}>
+          <button className="btn btn-primary" style={{ width: 42, height: 42, borderRadius: 999, padding: 0, cursor: "default" }} title="Sắp có" disabled>
             <Icon name="play" size={18} />
           </button>
           <div style={{ flex: 1 }}>
@@ -286,30 +294,20 @@ function ProducingView({
 }
 
 function ToneChat() {
+  // Style-refinement chat has no backend LLM endpoint yet, so the controls are
+  // shown disabled ("Sắp có") instead of simulating a rewrite.
   const [tone, setTone] = React.useState("formal");
   const [len, setLen] = React.useState(2);
-  const [msgs, setMsgs] = React.useState<{ role: "ai" | "user"; text: string }[]>([
-    { role: "ai", text: "Mình có thể chỉnh giọng văn, độ dài và tone cho tập này. Bạn muốn thay đổi gì?" },
-  ]);
-  const [input, setInput] = React.useState("");
-  const send = (t?: string) => {
-    const text = (t ?? input).trim();
-    if (!text) return;
-    // TODO(backend): wire to the real LLM to actually rewrite the script.
-    setMsgs((m) => [
-      ...m,
-      { role: "user", text },
-      { role: "ai", text: "Đã áp dụng! Mình viết lại đoạn mở đầu theo hướng đó, bạn xem trong editor nhé." },
-    ]);
-    setInput("");
-  };
   return (
     <Card style={{ display: "flex", flexDirection: "column", overflow: "hidden", height: "100%" }}>
       <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 9 }}>
         <Icon name="sliders-horizontal" size={17} style={{ color: "var(--brand)" }} />
         <h3 style={{ fontSize: 15 }}>Tinh chỉnh văn phong</h3>
+        <Badge tone="neutral" style={{ marginLeft: "auto" }}>
+          Sắp có
+        </Badge>
       </div>
-      <div style={{ padding: 16, borderBottom: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ padding: 16, borderBottom: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 14, opacity: 0.6, pointerEvents: "none" }}>
         <div>
           <span className="label">Tông giọng</span>
           <Segmented
@@ -333,23 +331,13 @@ function ToneChat() {
         </div>
       </div>
       <div className="scroll-y" style={{ flex: 1, padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
-        {msgs.map((m, i) => (
-          <ChatBubble key={i} role={m.role}>
-            {m.text}
-          </ChatBubble>
-        ))}
+        <ChatBubble role="ai">
+          Trợ lý tinh chỉnh văn phong sẽ sớm có mặt — bạn sẽ chỉnh được giọng văn, độ dài và tông cho từng tập.
+        </ChatBubble>
       </div>
       <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
-        <input
-          className="field"
-          placeholder="Vd: viết hài hước hơn…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send();
-          }}
-        />
-        <Button variant="primary" icon="send" className="btn-icon" onClick={() => send()} />
+        <input className="field" placeholder="Sắp có…" disabled style={{ opacity: 0.6 }} />
+        <Button variant="primary" icon="send" className="btn-icon" disabled title="Sắp có" />
       </div>
     </Card>
   );
@@ -380,8 +368,25 @@ function railFromJobs(jobs: GenJob[]): { doneIds: string[]; activeId: string } {
 }
 
 export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
-  const series = route.series || SERIES[0];
-  const episode = route.episode || series.episodes.find((e) => e.status !== "published") || series.episodes[0];
+  // No active series → nothing real to script. Show an empty state instead of
+  // falling back to mock data. (The episode may still be implied from the series.)
+  if (!route.series) {
+    return (
+      <EmptyState
+        icon="pen-line"
+        title="Chưa chọn series"
+        desc="Hãy mở một series từ Bảng điều khiển để bắt đầu viết kịch bản."
+        actionLabel="Về Bảng điều khiển"
+        onAction={() => nav({ name: "dashboard" })}
+      />
+    );
+  }
+  return <WorkspaceInner nav={nav} route={route} series={route.series} />;
+}
+
+function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series: Series }) {
+  const episode: Episode =
+    route.episode || series.episodes.find((e) => e.status !== "published") || series.episodes[0];
   // If we navigated in with a live job (from image-select after startGeneration,
   // or a resumed produce), open straight into the producing view.
   const [stage, setStage] = React.useState<"edit" | "producing">(
@@ -399,8 +404,8 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
   // episode until it is scripted. Demo/offline: a missing backend surfaces as an
   // error banner but the screen stays usable.
   React.useEffect(() => {
-    if (!route.series || !route.episode) {
-      // Offline/demo seed — no real episode to script.
+    if (!route.episode) {
+      // Series opened without a specific episode — nothing to fetch yet.
       setScriptLoading(false);
       return;
     }
@@ -612,7 +617,13 @@ export function WorkspaceScreen({ nav, route }: { nav: Nav; route: Route }) {
                   {(segments || []).map((seg, i) => (
                     <SegmentCard key={seg.id} seg={seg} idx={i} />
                   ))}
-                  <button className="btn btn-ghost btn-md" style={{ border: "1.5px dashed var(--border-strong)", color: "var(--text-2)" }}>
+                  {/* Add-segment — no backend endpoint yet. */}
+                  <button
+                    className="btn btn-ghost btn-md"
+                    style={{ border: "1.5px dashed var(--border-strong)", color: "var(--text-2)", opacity: 0.5, cursor: "default" }}
+                    title="Sắp có"
+                    disabled
+                  >
                     <Icon name="plus" size={17} /> Thêm đoạn
                   </button>
                 </>
