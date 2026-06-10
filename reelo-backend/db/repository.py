@@ -230,9 +230,10 @@ class EpisodeRepo:
     ) -> Episode | None:
         """Record lazy-script-gen progress so the UI can surface it (status + error).
 
-        ``script_status`` is ``"running" | "done" | "error"``. ``error`` is a short
-        human-readable message (provider + cause), set only when status is
-        ``"error"`` and cleared on every ``running``/``done`` transition. Kept in
+        ``script_status`` is ``"running" | "done" | "error" | "cancelled"``.
+        ``error`` is a short human-readable message (provider + cause, or the stop
+        notice), set only when status is ``"error"`` / ``"cancelled"`` and cleared
+        on every ``running``/``done`` transition. Kept in
         the existing ``paths`` JSONB (no migration) under the ``script_status`` /
         ``script_error`` keys, merged so asset keys are not clobbered.
 
@@ -248,13 +249,19 @@ class EpisodeRepo:
             return None
         paths = {**(ep.paths or {})}
         paths["script_status"] = script_status
+        # A pending cancel request is per-run: clear it on every state transition so
+        # it never leaks into the next run (a fresh ``running`` start, or any
+        # terminal state). The flag is set by :meth:`request_script_cancel` WHILE
+        # running and read by the worker loop, which makes no ``set_script_state``
+        # call mid-loop — so it survives exactly the window it needs to.
+        paths.pop("script_cancel", None)
         if script_status == "running":
             if not paths.get("script_started_at"):
                 paths["script_started_at"] = (
                     datetime.now(timezone.utc).isoformat()
                 )
             paths.pop("script_error", None)
-        elif script_status == "error":
+        elif script_status in ("error", "cancelled"):
             paths["script_error"] = error or "unknown error"
             paths.pop("script_started_at", None)
         else:  # done
@@ -263,6 +270,32 @@ class EpisodeRepo:
         ep.paths = paths
         await self.s.flush()
         return ep
+
+    async def request_script_cancel(self, user_id: str, episode_id: str) -> bool:
+        """Flag a running script-gen to stop cooperatively (token-saver).
+
+        Sets ``paths["script_cancel"] = True`` so the worker's chunk loop aborts
+        BEFORE its next model call (it polls :meth:`is_script_cancel_requested`
+        between calls — that is where the tokens are spent). No-op unless
+        ``script_status`` is ``"running"`` (nothing in flight to stop otherwise).
+        Returns whether the flag was set.
+        """
+        ep = await self.get(user_id, episode_id)
+        if ep is None:
+            return False
+        status, _ = self.script_state(ep.paths)
+        if status != "running":
+            return False
+        paths = {**(ep.paths or {})}
+        paths["script_cancel"] = True
+        ep.paths = paths
+        await self.s.flush()
+        return True
+
+    async def is_script_cancel_requested(self, user_id: str, episode_id: str) -> bool:
+        """True if a stop was requested for this episode's in-flight script gen."""
+        ep = await self.get(user_id, episode_id)
+        return bool((ep.paths or {}).get("script_cancel")) if ep is not None else False
 
     @staticmethod
     def script_state(paths: dict[str, Any] | None) -> tuple[str | None, str | None]:

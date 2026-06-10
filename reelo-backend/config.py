@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     storage_bucket: str = Field(default="reelo-assets", alias="STORAGE_BUCKET")
     storage_region: str = Field(default="us-east-1", alias="STORAGE_REGION")
     storage_endpoint_url: str = Field(default="", alias="STORAGE_ENDPOINT_URL")
+    # Browser-reachable endpoint used ONLY to sign download URLs (presigned GETs).
+    # Internal put/get/exists keep using ``storage_endpoint_url`` (e.g. the in-cluster
+    # ``http://minio:9000``); presigned URLs must point at a host the user's browser
+    # can reach (e.g. ``https://assets.example.com`` via the tunnel). Empty = reuse
+    # the internal endpoint (correct when it is already public, e.g. real S3).
+    storage_public_endpoint_url: str = Field(default="", alias="STORAGE_PUBLIC_ENDPOINT_URL")
     storage_access_key_id: str = Field(default="", alias="STORAGE_ACCESS_KEY_ID")
     storage_secret_access_key: str = Field(default="", alias="STORAGE_SECRET_ACCESS_KEY")
     storage_signed_url_ttl: int = Field(default=3600, alias="STORAGE_SIGNED_URL_TTL")
@@ -138,6 +144,16 @@ class Settings(BaseSettings):
     @property
     def storage_endpoint_url_or_none(self) -> str | None:
         return self.storage_endpoint_url or None
+
+    @property
+    def storage_public_endpoint_url_or_none(self) -> str | None:
+        """Public endpoint for presigned download URLs (falls back to internal).
+
+        When set, the S3 backend signs ``get_object`` URLs against this host so the
+        browser can reach the asset; when empty it reuses the internal endpoint
+        (the right default for real S3 or a MinIO that is already public).
+        """
+        return self.storage_public_endpoint_url or self.storage_endpoint_url or None
 
     def master_key_bytes(self) -> bytes:
         """Decode the base64 master key into 32 raw bytes.

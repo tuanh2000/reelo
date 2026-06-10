@@ -47,6 +47,7 @@ Xfade chain + audio mux (voice, optionally + ducked/looped music)::
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -380,6 +381,7 @@ async def render_episode(
     work_dir: Path | None = None,
     clip_timeout: float | None = 600,
     mux_timeout: float | None = 1800,
+    on_progress: Callable[[float], Awaitable[None]] | None = None,
 ) -> Path:
     """Render an episode → ``out_path`` (final.mp4). The only I/O entrypoint here.
 
@@ -396,6 +398,9 @@ async def render_episode(
             uniform ``clip_NN.mp4`` so the xfade chain + audio mux are unchanged.
         music_path: optional ``music/bg.mp3`` to duck under the voice.
         work_dir: where per-clip mp4s are written (defaults to ``out_path``'s dir).
+        on_progress: optional async callback invoked with a 0.0–1.0 render fraction
+            after each clip, so the worker can advance the render job's progress bar
+            instead of leaving it frozen for the whole encode.
 
     Returns:
         ``out_path``.
@@ -422,6 +427,17 @@ async def render_episode(
     duration = await ffmpeg.probe_duration(voice_path)
     plan = plan_render(image_paths, narrations, duration, aspect, media_types=media_types)
 
+    # Coarse render progress (0.0–1.0): the N per-clip encodes are the bulk; the
+    # final xfade+mux is the long tail, counted as one extra unit (so the bar lands
+    # near — but not at — 1.0 just before the mux). ``on_progress`` lets the worker
+    # advance the render job's bar per clip instead of freezing it for the whole run.
+    n = len(plan.image_paths)
+    units = n + 1
+
+    async def _report(done_units: int) -> None:
+        if on_progress is not None:
+            await on_progress(min(done_units / units, 1.0))
+
     clip_paths: list[Path] = []
     for i, (media, d, kind) in enumerate(
         zip(plan.image_paths, plan.padded, plan.media_types)
@@ -441,6 +457,7 @@ async def render_episode(
         )
         await ffmpeg.run(cmd, timeout=clip_timeout)
         clip_paths.append(clip)
+        await _report(i + 1)
 
     use_music = music_path is not None and Path(music_path).exists()
     cmd = build_xfade_mux_cmd(

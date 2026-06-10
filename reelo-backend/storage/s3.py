@@ -21,19 +21,24 @@ class S3ObjectStorage(ObjectStorage):
         self.bucket = s.storage_bucket
         self.region = s.storage_region
         self.endpoint_url = s.storage_endpoint_url_or_none
+        # Browser-facing endpoint used only for presigned download URLs (falls back
+        # to the internal endpoint). MinIO behind an internal hostname needs this so
+        # signed URLs point at a host the browser can reach (signature is bound to
+        # the host, so we must SIGN against the public endpoint — not rewrite later).
+        self.public_endpoint_url = s.storage_public_endpoint_url_or_none
         self.access_key = s.storage_access_key_id or None
         self.secret_key = s.storage_secret_access_key or None
         self.signed_url_ttl = s.storage_signed_url_ttl
 
     @asynccontextmanager
-    async def _client(self) -> AsyncIterator[Any]:
+    async def _client(self, *, endpoint_url: str | None = None) -> AsyncIterator[Any]:
         import aioboto3  # lazy import
 
         session = aioboto3.Session()
         async with session.client(
             "s3",
             region_name=self.region,
-            endpoint_url=self.endpoint_url,
+            endpoint_url=endpoint_url if endpoint_url is not None else self.endpoint_url,
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
         ) as client:
@@ -95,7 +100,10 @@ class S3ObjectStorage(ObjectStorage):
         return deleted
 
     async def signed_url(self, key: str, *, expires_in: int | None = None) -> str:
-        async with self._client() as c:
+        # Sign against the PUBLIC endpoint so the URL is both browser-reachable and
+        # carries a signature valid for that host (defaults to the internal endpoint
+        # when no public one is configured).
+        async with self._client(endpoint_url=self.public_endpoint_url) as c:
             return await c.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket, "Key": key},

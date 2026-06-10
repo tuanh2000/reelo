@@ -134,8 +134,24 @@ async def generate_script(ctx: dict, user_id: str, episode_id: str) -> dict:
     """
     log.info("generate_script received user_id=%s episode_id=%s", user_id, episode_id)
     # Imported lazily so the worker module imports cleanly without Module 1 deps.
-    from module1.episode_script import generate_episode_script
+    from module1.episode_script import (
+        ScriptCancelled,
+        generate_episode_script,
+    )
     from module1.persistence import find_series_for_episode, update_episode_in_series
+
+    async def _cancel_requested() -> bool:
+        # Poll the per-episode stop flag (set by POST /episodes/{id}/cancel-script)
+        # on a FRESH session so we observe the web process's commit. Checked between
+        # model calls; a read hiccup must never abort a healthy run.
+        try:
+            async with session_scope() as session:
+                return await EpisodeRepo(session).is_script_cancel_requested(
+                    user_id, episode_id
+                )
+        except Exception as exc:  # noqa: BLE001 — cancel check is best-effort
+            log.warning("generate_script: cancel check failed (%s)", exc)
+            return False
 
     call_ctx = await build_call_context(ctx, user_id)
     provider: str | None = None
@@ -154,7 +170,9 @@ async def generate_script(ctx: dict, user_id: str, episode_id: str) -> dict:
                 await EpisodeRepo(session).set_script_state(user_id, episode_id, "done")
             return {"episode_id": episode_id, "status": ep.status, "segments": len(ep.segments)}
 
-        updated = await generate_episode_script(spec, ep, call_ctx)
+        updated = await generate_episode_script(
+            spec, ep, call_ctx, should_cancel=_cancel_requested
+        )
 
         async with session_scope() as session:
             await update_episode_in_series(session, user_id, spec.series_id, updated)
@@ -165,6 +183,26 @@ async def generate_script(ctx: dict, user_id: str, episode_id: str) -> dict:
             "status": updated.status,
             "segments": len(updated.segments),
         }
+    except ScriptCancelled:
+        # User-initiated stop (token-saver) — NOT a failure: record a friendly
+        # ``cancelled`` state and return normally so Arq logs no traceback and the
+        # episode stays a clean draft, ready to start again.
+        log.info(
+            "generate_script cancelled by user user_id=%s episode_id=%s",
+            user_id,
+            episode_id,
+        )
+        try:
+            async with session_scope() as session:
+                await EpisodeRepo(session).set_script_state(
+                    user_id,
+                    episode_id,
+                    "cancelled",
+                    "Đã dừng tạo kịch bản theo yêu cầu của bạn — bấm “Bắt đầu” để chạy lại.",
+                )
+        except Exception as save_exc:  # noqa: BLE001 — state write is best-effort
+            log.warning("generate_script: could not record cancelled state (%s)", save_exc)
+        return {"episode_id": episode_id, "status": "draft", "segments": 0, "cancelled": True}
     except Exception as exc:
         # Surface the failure on the episode so the UI can stop polling and show it
         # (with a copyable message). Full traceback still goes to the worker log.

@@ -23,6 +23,7 @@ from clients.registry import ServiceRegistry
 from keystore import Cipher, KeyStore
 from models.spec import EpisodeSpec, ImageStyle, SeriesSpec, VoiceConfig
 from module1.episode_script import (
+    ScriptCancelled,
     ScriptGenerationError,
     generate_episode_script,
     reindex,
@@ -242,6 +243,66 @@ async def test_general_topic_explain_skill_generates_without_refusal():
     assert "NO subject restriction" in sys
     assert "three-layer method" not in sys
     assert "ALREADY a believer" not in sys
+
+
+class CountingClient(FakeSegmentClient):
+    """Counts the chunk (token-spending) calls so a cancel can be shown to bound them."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.chunk_calls = 0
+
+    async def write_script(self, req: ScriptRequest, ctx) -> ScriptResult:
+        props = (req.json_schema or {}).get("properties", {})
+        is_chunk = not ("title" in props and "segments" not in props)
+        if is_chunk:
+            self.chunk_calls += 1
+        return await super().write_script(req, ctx)
+
+
+async def test_cancel_before_first_call_raises_and_spends_no_tokens():
+    """A stop requested before generation starts raises ScriptCancelled without
+    making a single model call (the whole point: stop burning tokens)."""
+    series = _series(target=5, density="standard")
+    reg = _registry_with(CountingClient)
+    client = reg._clients["fake"]
+
+    async def always_cancel() -> bool:
+        return True
+
+    with pytest.raises(ScriptCancelled):
+        await generate_episode_script(
+            series, series.episodes[0], _ctx(), registry=reg, should_cancel=always_cancel
+        )
+    assert client.chunk_calls == 0
+
+
+async def test_cancel_after_first_chunk_stops_early():
+    """Cancelling mid-run stops BEFORE the next chunk's call — so a long, many-chunk
+    script makes one call instead of dozens once the stop is requested."""
+    series = _series(target=25, density="dense")  # → 68 segments, many chunks
+    reg = _registry_with(CountingClient)
+    client = reg._clients["fake"]
+
+    async def cancel_after_one() -> bool:
+        return client.chunk_calls >= 1
+
+    with pytest.raises(ScriptCancelled):
+        await generate_episode_script(
+            series, series.episodes[0], _ctx(), registry=reg, should_cancel=cancel_after_one
+        )
+    # One chunk call got through, then it stopped — nowhere near the full run.
+    assert client.chunk_calls == 1
+
+
+async def test_should_cancel_none_is_unchanged_behaviour():
+    """The default (no should_cancel) path is identical to before — a full script."""
+    series = _series(target=5, density="standard")  # → 9 segments
+    out = await generate_episode_script(
+        series, series.episodes[0], _ctx(), registry=_registry_with(FakeSegmentClient)
+    )
+    assert out.status == "scripted"
+    assert len(out.segments) == 9
 
 
 def test_reindex_renumbers_and_dedupes_labels():

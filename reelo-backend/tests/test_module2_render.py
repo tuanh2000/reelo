@@ -145,6 +145,36 @@ async def test_render_episode_validates_counts(tmp_path):
         await render.render_episode([], [], tmp_path / "v.mp3", tmp_path / "out.mp4", "16:9")
 
 
+async def test_render_episode_reports_progress(tmp_path, monkeypatch):
+    """on_progress fires once per clip, with strictly increasing fractions (so the
+    UI render bar advances instead of freezing). No ffmpeg: run/probe are faked."""
+
+    async def fake_run(argv, *, timeout=None):
+        return ""
+
+    async def fake_probe(path, *, timeout=60):
+        return 12.0
+
+    monkeypatch.setattr(render.ffmpeg, "run", fake_run)
+    monkeypatch.setattr(render.ffmpeg, "probe_duration", fake_probe)
+
+    fracs: list[float] = []
+
+    async def on_progress(f: float) -> None:
+        fracs.append(f)
+
+    imgs = [tmp_path / f"{i}.png" for i in range(3)]
+    narr = ["alpha beta gamma delta"] * 3
+    await render.render_episode(
+        imgs, narr, tmp_path / "v.mp3", tmp_path / "out.mp4", "16:9",
+        work_dir=tmp_path / "clips", on_progress=on_progress,
+    )
+    assert len(fracs) == 3  # one report per clip
+    assert fracs == sorted(fracs)  # non-decreasing
+    assert 0 < fracs[0] < fracs[-1] <= 1.0
+    assert fracs[-1] == 3 / 4  # n / (n + 1): the mux is the remaining unit
+
+
 # --------------------------------------------------------------------------- #
 # Smoke render (real ffmpeg) — skipped if ffmpeg absent                       #
 # --------------------------------------------------------------------------- #

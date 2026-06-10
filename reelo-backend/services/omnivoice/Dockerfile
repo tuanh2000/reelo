@@ -18,7 +18,17 @@
 # =============================================================================
 # pytorch/pytorch ships CUDA + cuDNN + a matching torch/torchaudio already, so
 # we don't re-install torch from requirements (it's already present and CUDA-built).
-FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+#
+# torch MUST be >= 2.7: transformers (pulled in by omnivoice, >=5.3.0) imports
+# torch.float8_e8m0fnu at module load, and that dtype only exists from torch 2.7.
+# On the old 2.4.1 base, `from transformers import HiggsAudioV2TokenizerModel`
+# raised AttributeError, so /clone returned 503 ("OmniVoice runtime unavailable").
+#
+# We pin the CUDA 12.6 build (NOT 12.8): PyTorch 2.8 + CUDA 12.8 removed Pascal
+# (sm_61) kernels, and the GPU host runs a GTX 1080 Ti (sm_61). torch 2.7.x on
+# cu126 still ships Pascal kernels, so it both imports transformers AND runs on
+# this GPU. Going past torch 2.7 here would need a newer (sm_70+) card.
+FROM pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -34,8 +44,13 @@ WORKDIR /app
 
 # torch/torchaudio already come from the base image with the correct CUDA build,
 # so install only the service deps (omnivoice, soundfile, server stack).
+#
+# transformers is pinned: this host is locked to torch 2.7 (Pascal GPU), and a
+# future transformers that requires torch >= 2.8 would silently break the build.
+# 5.10.2 is the version verified working against torch 2.7.x on this GPU.
 RUN pip install \
     omnivoice \
+    "transformers==5.10.2" \
     soundfile \
     "fastapi>=0.115" \
     "uvicorn[standard]>=0.30" \

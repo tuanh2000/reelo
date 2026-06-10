@@ -30,6 +30,7 @@ from usage import UsageLogger
 from web.deps import CurrentUser, DbSession
 from web.schemas import (
     EpisodeAssets,
+    EpisodeCancelScriptResponse,
     EpisodeDetailResponse,
     EpisodeResetResponse,
     EpisodeScriptResponse,
@@ -192,6 +193,33 @@ async def generate_episode_script(
         await EpisodeRepo(db).set_script_state(user_id, episode_id, "running")
         await enqueue_job("generate_script", user_id, episode_id)
     return EpisodeScriptResponse(episode=ep)
+
+
+@router.post("/{episode_id}/cancel-script", response_model=EpisodeCancelScriptResponse)
+async def cancel_episode_script(
+    episode_id: str, user_id: CurrentUser, db: DbSession
+) -> EpisodeCancelScriptResponse:
+    """Stop an in-flight lazy script gen to stop burning tokens (per-episode).
+
+    Flags the running ``generate_script`` job to abort BEFORE its next model call
+    (the worker polls the flag between chunk/parse-retry calls — that loop is what
+    spends Claude tokens). Cooperative, so the call already in flight finishes, then
+    the run stops and the episode is recorded ``cancelled`` (a clean draft again).
+
+    - 404 if the episode is missing.
+    - ``cancelled=False`` (200) when nothing was running to stop (already
+      done/error or never started) — a harmless no-op the UI can ignore.
+    """
+    found = await find_series_for_episode(db, user_id, episode_id)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"episode {episode_id} not found"
+        )
+    repo = EpisodeRepo(db)
+    cancelled = await repo.request_script_cancel(user_id, episode_id)
+    row = await repo.get(user_id, episode_id)
+    current, _ = repo.script_state(row.paths if row is not None else None)
+    return EpisodeCancelScriptResponse(cancelled=cancelled, script_status=current)  # type: ignore[arg-type]
 
 
 @router.post("/{episode_id}/reset", response_model=EpisodeResetResponse)

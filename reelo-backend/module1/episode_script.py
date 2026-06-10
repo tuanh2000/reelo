@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 from clients.base import AIClient, CallContext, ScriptRequest, ScriptResult, Task
 from clients.registry import ServiceRegistry, get_registry
@@ -46,9 +47,30 @@ log = logging.getLogger("reelo.module1.script")
 
 MAX_PARSE_RETRIES = 3
 
+# A user-supplied predicate, polled between model calls, that returns True once a
+# stop has been requested for this run. Lets the worker abort BEFORE the next
+# (token-spending) call instead of waiting out the whole retry budget.
+CancelCheck = Callable[[], Awaitable[bool]]
+
 
 class ScriptGenerationError(Exception):
     """A chunk could not be produced cleanly within the retry budget (§9)."""
+
+
+class ScriptCancelled(Exception):
+    """The user stopped script generation mid-run (cooperative cancel).
+
+    Raised by :func:`generate_episode_script` between model calls when the caller's
+    ``should_cancel`` predicate returns True, so we stop BEFORE spending the next
+    call's tokens. Not a failure: the worker records a ``cancelled`` state (not an
+    ``error``) and the episode stays a clean draft, ready to start again.
+    """
+
+
+async def _abort_if_cancelled(should_cancel: CancelCheck | None) -> None:
+    """Raise :class:`ScriptCancelled` if a stop was requested (no-op when None)."""
+    if should_cancel is not None and await should_cancel():
+        raise ScriptCancelled("script generation stopped by user")
 
 
 def _looks_truncated(text: str) -> bool:
@@ -66,6 +88,7 @@ async def _run_chunk(
     words_per_segment: int,
     prev_summary: str | None,
     ctx: CallContext,
+    should_cancel: CancelCheck | None = None,
 ) -> list[SegmentSpec]:
     """Generate + validate one chunk, retrying ≤3 on parse/validate failure (§9)."""
     schema = segments_json_schema(series.language)
@@ -81,6 +104,9 @@ async def _run_chunk(
 
     last_error = "unknown"
     for attempt in range(1, MAX_PARSE_RETRIES + 1):
+        # Honour a stop request before each (token-spending) call — including
+        # between parse retries, the loop that was burning tokens.
+        await _abort_if_cancelled(should_cancel)
         req = ScriptRequest(messages=list(messages), system=system, json_schema=schema)
         result: ScriptResult = await client.write_script(req, ctx)
         text = result.text or ""
@@ -160,6 +186,7 @@ async def generate_episode_script(
     ctx: CallContext,
     *,
     registry: ServiceRegistry | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> EpisodeSpec:
     """Generate the full script for one episode (module-1 §7). Returns an updated copy.
 
@@ -170,6 +197,9 @@ async def generate_episode_script(
         ep: the episode to script (``segments`` empty until now).
         ctx: per-job :class:`CallContext` (user key + usage), built by the worker.
         registry: override the process registry (tests inject one with stubs).
+        should_cancel: optional async predicate polled between model calls; when it
+            returns True the run raises :class:`ScriptCancelled` before the next
+            call (the worker maps that to a ``cancelled`` state, not an error).
 
     Returns:
         A copy of ``ep`` with ``segments`` (contiguous 1..N), ``youtube`` metadata,
@@ -195,6 +225,7 @@ async def generate_episode_script(
     segments: list[SegmentSpec] = []
     prev_summary: str | None = None
     for chunk in chunks:
+        await _abort_if_cancelled(should_cancel)
         chunk_segs = await _run_chunk(
             client,
             series,
@@ -204,6 +235,7 @@ async def generate_episode_script(
             words_per_segment=budget.words_per_segment,
             prev_summary=prev_summary,
             ctx=ctx,
+            should_cancel=should_cancel,
         )
         segments.extend(chunk_segs)
         # Carry a 1-2 sentence tail forward to keep narrative continuity (§8).
@@ -221,6 +253,7 @@ async def generate_episode_script(
 __all__ = [
     "MAX_PARSE_RETRIES",
     "ScriptGenerationError",
+    "ScriptCancelled",
     "reindex",
     "generate_episode_script",
 ]

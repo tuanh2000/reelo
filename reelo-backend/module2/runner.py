@@ -712,6 +712,19 @@ async def run_produce_episode(
     await update_job(
         user_id, seeded.render_id, state="running", progress=jobmod.PROGRESS_START
     )
+
+    # Map the renderer's 0..1 fraction onto the render job's running band (10..90)
+    # so the UI bar advances per clip instead of sitting frozen for the whole encode.
+    # Throttled to integer-percent increases to keep the per-clip DB writes cheap.
+    _render_pct = [jobmod.PROGRESS_START]
+
+    async def _render_progress(frac: float) -> None:
+        span = jobmod.PROGRESS_RUNNING_CAP - jobmod.PROGRESS_START
+        pct = jobmod.PROGRESS_START + int(max(0.0, min(frac, 1.0)) * span)
+        if pct > _render_pct[0]:
+            _render_pct[0] = pct
+            await update_job(user_id, seeded.render_id, progress=pct)
+
     narrations = [s.narration for s in ep.segments]
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
     reused_imgs = extra.get("reused_images") or set()
@@ -738,6 +751,7 @@ async def run_produce_episode(
                 media_types=media_types,
                 music_path=lo.music_bg if lo.music_bg.exists() else None,
                 work_dir=lo.root / "clips",
+                on_progress=_render_progress,
             )
             subtitles.write_srt(narrations, voice_outcome.duration_s, lo.subs_srt)
         except Exception as exc:  # noqa: BLE001

@@ -8,6 +8,7 @@ import { PIPELINE, type Nav, type Route, type Series, type Episode, type GenJob,
 import {
   generateEpisodeScript,
   getEpisode,
+  cancelScript,
   startGeneration,
   pollGenerationDetail,
   retryChild,
@@ -590,7 +591,7 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
   // So switching tabs / navigating away / refreshing / reopening all show     //
   // the correct, durable state without the client holding any job id.         //
   // ====================================================================== //
-  type ScriptPhase = "loading" | "running" | "done" | "error";
+  type ScriptPhase = "loading" | "running" | "done" | "error" | "cancelled";
   const [stage, setStage] = React.useState<"edit" | "producing">("edit");
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [jobs, setJobs] = React.useState<GenJob[]>([]);
@@ -605,6 +606,10 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
   // Bump to force a fresh script gen attempt (the "Thử lại" button) and to
   // re-sync after starting a produce run.
   const [scriptAttempt, setScriptAttempt] = React.useState(0);
+  // "Dừng tạo kịch bản": flips the spinner to "đang dừng" while we wait for the
+  // worker to stop (it finishes its in-flight call, then records `cancelled`,
+  // which the next poll reconciles into the cancelled view). Reset each attempt.
+  const [stopRequested, setStopRequested] = React.useState(false);
 
   // Server-time elapsed counters (recompute every tick + on tab focus).
   const scriptElapsed = useServerElapsed(scriptPhase === "running" ? scriptStartedMs : null);
@@ -629,11 +634,16 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
     // Map one episode detail snapshot onto the workspace state machine.
     const reconcile = (detail: EpisodeDetail): { keepPolling: boolean } => {
       const gen = detail.generation;
-      const producing = gen != null && gen.state === "running";
       const hasSegments = !!detail.episode.segments?.length;
 
-      // Active produce job → producing view (jobId + elapsed FROM BACKEND).
-      if (producing && gen) {
+      // A produce run exists (running / done / error) → show the producing view,
+      // NOT the editor: running → live progress; done → "Đã dựng xong · Tiếp tục
+      // duyệt"; error → failed steps + "Chạy lại". A done/assembled episode used to
+      // fall through to the editor here, so a finished video looked un-produced
+      // ("quay lại bước tạo kịch bản"). The "Sửa kịch bản" button still returns to
+      // the editor for a re-edit. The produce effect drives polling when running;
+      // done/error are terminal so it polls once then stops.
+      if (gen != null) {
         setStage("producing");
         setJobId(gen.jobId);
         if (gen.jobs.length) setJobs(gen.jobs);
@@ -641,19 +651,11 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
         setProduceError(null);
         if (hasSegments && segments == null) applySegments(detail.episode.segments);
         else if (hasSegments) setScriptPhase("done");
-        return { keepPolling: false }; // the produce effect drives polling
+        return { keepPolling: false };
       }
 
-      // Not producing → stay/return to edit; surface script segments or state.
+      // No produce run → editor (segments) or script-gen state (no segments).
       setStage("edit");
-      if (gen != null) {
-        // A finished/failed produce run exists: keep its id so retries + the
-        // "Tiếp tục duyệt" handoff to review work after a remount.
-        setJobId(gen.jobId);
-        if (gen.jobs.length) setJobs(gen.jobs);
-        setProduceStartedMs(isoToMs(gen.startedAt));
-      }
-
       if (hasSegments) {
         applySegments(detail.episode.segments);
         return { keepPolling: false };
@@ -661,6 +663,14 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
       if (detail.scriptStatus === "error") {
         setScriptError(detail.scriptError || "Worker báo lỗi nhưng không kèm chi tiết.");
         setScriptPhase("error");
+        return { keepPolling: false };
+      }
+      if (detail.scriptStatus === "cancelled") {
+        // User stopped it (token-saver) — a clean draft, NOT a failure. Show a
+        // neutral "đã dừng" notice with a "Bắt đầu lại" action, and do NOT re-kick
+        // lazy gen (that would defeat the stop).
+        setScriptError(detail.scriptError || "Đã dừng tạo kịch bản theo yêu cầu của bạn.");
+        setScriptPhase("cancelled");
         return { keepPolling: false };
       }
       // running (or status not yet written) → timer anchored to server time.
@@ -679,12 +689,16 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
       try {
         const detail = await getEpisode(episode.id);
         if (!alive) return;
-        // Kick off lazy gen once if nothing has been scripted/started yet.
+        // Kick off lazy gen once if nothing has been scripted/started yet. On a
+        // fresh mount we only kick when script gen never started (status null) — we
+        // must NOT auto-restart a terminal error/cancelled run (that would silently
+        // re-burn tokens). But a user-initiated attempt ("Thử lại" / "Bắt đầu lại",
+        // scriptAttempt > 0) re-kicks even from error/cancelled.
         if (
           !kicked &&
           !detail.episode.segments?.length &&
-          detail.scriptStatus == null &&
-          detail.generation == null
+          detail.generation == null &&
+          (detail.scriptStatus == null || scriptAttempt > 0)
         ) {
           kicked = true;
           try {
@@ -708,6 +722,7 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
 
     setScriptPhase("loading");
     setScriptError(null);
+    setStopRequested(false);
     void loadAndPoll();
 
     // Re-sync the moment the tab becomes visible again (no reset, no drift).
@@ -731,6 +746,21 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
     setSegments(null);
     setScriptStartedMs(null);
     setScriptAttempt((n) => n + 1);
+  };
+
+  // Stop an in-flight script gen (token-saver). Cooperative: the worker finishes
+  // the call already in flight, then stops and records `cancelled` — the next poll
+  // reconciles that into the cancelled view. We keep polling so the flip is driven
+  // by the backend (no optimistic flip-flop if the worker is mid-call).
+  const stopScript = async () => {
+    setStopRequested(true);
+    setProduceError(null);
+    try {
+      await cancelScript(episode.id);
+    } catch (e) {
+      setStopRequested(false);
+      setProduceError(e instanceof Error ? e.message : "Không dừng được việc viết kịch bản.");
+    }
   };
 
   // ---- Reset ("Làm lại từ đầu"): destructive — wipe script + assets, re-script ----
@@ -988,6 +1018,17 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
                     </Button>
                   }
                 />
+              ) : scriptPhase === "cancelled" ? (
+                <ErrorBox
+                  title="Đã dừng tạo kịch bản"
+                  detail={scriptError || "Bạn đã dừng việc viết kịch bản để tiết kiệm token."}
+                  hint="Tập đã quay về bản nháp — không tốn thêm token. Bấm “Bắt đầu lại” khi muốn viết tiếp."
+                  actions={
+                    <Button variant="primary" size="sm" icon="refresh-cw" onClick={retryScript}>
+                      Bắt đầu lại
+                    </Button>
+                  }
+                />
               ) : scriptPhase === "done" ? (
                 <>
                   {(segments || []).map((seg, i) => (
@@ -1006,12 +1047,25 @@ function WorkspaceInner({ nav, route, series }: { nav: Nav; route: Route; series
               ) : (
                 // "loading" / "running": spinner + elapsed seconds; warn on stall.
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div className="card" style={{ padding: 24, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, boxShadow: "none" }}>
-                    <Icon name="loader" size={20} className="spin" style={{ color: "var(--brand)" }} />
-                    <span className="muted" style={{ fontSize: 14 }}>
-                      ✍️ Đang viết kịch bản…
-                      {scriptPhase === "running" && ` (đã ${scriptElapsed} giây)`}
-                    </span>
+                  <div className="card" style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center", gap: 14, boxShadow: "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <Icon name="loader" size={20} className="spin" style={{ color: "var(--brand)" }} />
+                      <span className="muted" style={{ fontSize: 14 }}>
+                        {stopRequested ? "⏹ Đang dừng…" : "✍️ Đang viết kịch bản…"}
+                        {!stopRequested && scriptPhase === "running" && ` (đã ${scriptElapsed} giây)`}
+                      </span>
+                    </div>
+                    {scriptPhase === "running" && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        icon="square"
+                        onClick={() => void stopScript()}
+                        disabled={stopRequested}
+                      >
+                        {stopRequested ? "Đang dừng…" : "Dừng tạo kịch bản"}
+                      </Button>
+                    )}
                   </div>
                   {scriptStalled && (
                     <ErrorBox

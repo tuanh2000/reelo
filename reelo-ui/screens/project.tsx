@@ -25,6 +25,7 @@ import {
   renameSeries,
   resetEpisode,
   resumeProduction,
+  cancelScript,
   ApiError,
 } from "@/lib/api";
 
@@ -93,6 +94,8 @@ function EpisodeRow({
   resetting,
   onResumeProduction,
   resumingProd,
+  onStopScript,
+  stopping,
 }: {
   ep: Episode;
   idx: number;
@@ -102,6 +105,8 @@ function EpisodeRow({
   resetting?: boolean;
   onResumeProduction?: (ep: Episode) => void;
   resumingProd?: boolean;
+  onStopScript?: (ep: Episode) => void;
+  stopping?: boolean;
 }) {
   const st = EP_STATUS[ep.status];
   const act = epAction(ep);
@@ -112,6 +117,9 @@ function EpisodeRow({
   // "Chạy lại bước chưa xong": only while producing (status "assets"). Recovers a
   // run frozen by a worker restart (deploy) — re-queues the unfinished steps.
   const canResume = !!onResumeProduction && ep.status === "assets";
+  // "Dừng": only while the script is actively being written. Flags the worker to
+  // stop before its next model call so it stops burning Claude tokens.
+  const canStopScript = !!onStopScript && ep.scriptStatus === "running";
   return (
     <div className="card" style={{ boxShadow: "none", display: "flex", alignItems: "center", gap: 14, padding: 13 }}>
       <span
@@ -158,6 +166,27 @@ function EpisodeRow({
           )}
         </div>
       </div>
+      {canStopScript && (
+        <button
+          className="btn btn-ghost btn-sm"
+          title="Dừng viết kịch bản — tránh tốn thêm token Claude"
+          aria-label="Dừng viết kịch bản"
+          disabled={stopping}
+          onClick={() => onStopScript?.(ep)}
+          style={{
+            flex: "none",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 10px",
+            color: "#dc2626",
+            fontWeight: 600,
+          }}
+        >
+          <Icon name={stopping ? "loader" : "square"} size={14} className={stopping ? "spin" : ""} />
+          Dừng
+        </button>
+      )}
       {canResume && (
         <button
           className="btn btn-ghost btn-sm"
@@ -365,6 +394,28 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
     }
   };
 
+  // "Dừng" per episode — stop an in-flight script gen so it stops burning tokens.
+  // Optimistically flip the badge off (scriptStatus → "cancelled"); the next list
+  // refresh confirms it from the backend.
+  const [stoppingId, setStoppingId] = React.useState<string | null>(null);
+  const doStopScript = async (ep: Episode) => {
+    setStoppingId(ep.id);
+    setResetError(null);
+    try {
+      if (!isDemo) await cancelScript(ep.id);
+      setSeries((prev) => ({
+        ...prev,
+        episodes: prev.episodes.map((e) =>
+          e.id === ep.id ? { ...e, scriptStatus: "cancelled" } : e,
+        ),
+      }));
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : "Không dừng được việc viết kịch bản.");
+    } finally {
+      setStoppingId(null);
+    }
+  };
+
   // "Chạy lại bước chưa xong" per episode — non-destructive: re-queue the
   // unfinished produce steps + re-enqueue produce, then open the workspace to
   // watch live progress (it rebuilds the producing view from the backend).
@@ -564,6 +615,8 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
             resetting={resetting && resetTarget?.id === ep.id}
             onResumeProduction={(e) => void doResumeProduction(e)}
             resumingProd={resumingId === ep.id}
+            onStopScript={(e) => void doStopScript(e)}
+            stopping={stoppingId === ep.id}
           />
         ))}
         <button

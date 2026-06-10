@@ -38,6 +38,12 @@ x-reelo-backend-env: &reelo-backend-env
   STORAGE_BUCKET: ${S3_BUCKET:-reelo-assets}
   STORAGE_REGION: ${S3_REGION:-us-east-1}
   STORAGE_ENDPOINT_URL: ${S3_ENDPOINT:-http://minio:9000}
+  # Browser-reachable endpoint for presigned download URLs (video/thumbnail/image
+  # preview). MUST be set in prod: the internal http://minio:9000 above is NOT
+  # reachable from the user's browser, so without this the video won't play.
+  # Point a public hostname (e.g. via the Cloudflare tunnel) at minio:9000 and set
+  # S3_PUBLIC_ENDPOINT to it, e.g. https://assets.cognal.xyz
+  STORAGE_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT:-}
   STORAGE_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
   STORAGE_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
   # ---- OmniVoice (GPU voice clone) ----

@@ -170,8 +170,13 @@ input, textarea { font-family: inherit; }
 .l3d-hint { position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-3); background: var(--surface); padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
 
 /* ---------- App shell ---------- */
-.shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100%; }
-.sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 18px 14px; gap: 4px; position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; }
+/* Shell is locked to the viewport and never scrolls (overflow:hidden); its single
+   row is definite (minmax(0,1fr) of 100dvh) so `.main`/`.content` height:100%
+   resolve and the CONTENT — not the body — scrolls. That is what keeps the sidebar
+   fixed: it fills its grid column and is never inside the scrolling element, so it
+   cannot be scrolled away (no sticky hack needed). */
+.shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 18px 14px; gap: 4px; height: 100%; min-height: 0; overflow-y: auto; }
 .side-brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 18px; }
 .side-section { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); padding: 16px 12px 6px; }
 .nav-item { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: var(--r-md); color: var(--text-2); font-weight: 600; font-size: 14.5px; border: none; background: transparent; width: 100%; text-align: left; transition: .14s; }
@@ -181,14 +186,14 @@ input, textarea { font-family: inherit; }
 .nav-item.is-active .nav-ico { color: var(--brand); }
 .nav-badge { margin-left: auto; font-size: 11px; }
 
-.main { display: flex; flex-direction: column; min-width: 0; height: 100%; }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; }
 .topbar { height: var(--topbar-h); border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--surface) 88%, transparent); backdrop-filter: blur(10px); display: flex; align-items: center; gap: 14px; padding: 0 24px; flex: none; position: sticky; top: 0; z-index: 20; }
 .crumb { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 14px; font-weight: 600; }
 .crumb b { color: var(--text); }
 .topbar-spacer { flex: 1; }
 .icon-btn { width: 40px; height: 40px; border-radius: var(--r-md); border: 1px solid transparent; background: transparent; color: var(--text-2); display: inline-flex; align-items: center; justify-content: center; transition: .14s; }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
-.content { flex: 1; overflow-y: auto; }
+.content { flex: 1; min-height: 0; overflow-y: auto; }
 .page { max-width: 1180px; margin: 0 auto; padding: 30px 28px 64px; }
 .page-wide { max-width: 1320px; }
 

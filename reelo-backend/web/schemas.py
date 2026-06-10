@@ -99,6 +99,19 @@ class EpisodeScriptResponse(BaseModel):
     episode: EpisodeSpec
 
 
+class EpisodeCancelScriptResponse(BaseModel):
+    """``POST /episodes/{id}/cancel-script`` — stop an in-flight script gen.
+
+    ``cancelled`` is True when a running script gen was flagged to stop (the worker
+    aborts before its next model call, so it stops spending tokens); False when
+    there was nothing in flight to stop. ``script_status`` echoes the episode's
+    current state so the UI can reconcile without a second fetch.
+    """
+
+    cancelled: bool
+    script_status: Literal["running", "done", "error", "cancelled"] | None = None
+
+
 class EpisodeResetResponse(BaseModel):
     """``POST /episodes/{id}/reset`` — the episode after a destructive reset.
 
@@ -183,9 +196,10 @@ class EpisodeDetailResponse(BaseModel):
     assets: EpisodeAssets = Field(default_factory=EpisodeAssets)
     # Lazy script-gen progress so the UI never spins forever (surfaced from the
     # episode's ``paths`` JSONB, written by ``worker.tasks.generate_script``).
-    # ``script_status`` is "running" | "done" | "error" | None (never generated);
-    # ``script_error`` carries a short, copyable message only when status="error".
-    script_status: Literal["running", "done", "error"] | None = None
+    # ``script_status`` is "running" | "done" | "error" | "cancelled" | None (never
+    # generated); ``script_error`` carries a short, copyable message when status is
+    # "error" (provider + cause) or "cancelled" (the stop notice).
+    script_status: Literal["running", "done", "error", "cancelled"] | None = None
     script_error: str | None = None
     # ISO-8601 server timestamp stamped when script-gen entered ``running`` (so the
     # workspace timer is anchored to server time, not a client mount clock). None

@@ -59,7 +59,7 @@ export interface Episode {
   // only for `draft` episodes so it can show a "✍️ Đang viết kịch bản…" badge +
   // a "Xem tiến độ" button while the worker is writing the first script. Undefined
   // for episodes whose state is unambiguous from `status` alone.
-  scriptStatus?: "running" | "done" | "error" | null;
+  scriptStatus?: "running" | "done" | "error" | "cancelled" | null;
 }
 
 export interface Series {

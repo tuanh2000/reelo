@@ -82,6 +82,15 @@ def m1_client(store, monkeypatch):
             store.script_state = (status, error)
             return store.episodes.get(episode_id)
 
+        async def request_script_cancel(self, user_id, episode_id):
+            row = store.episodes.get(episode_id)
+            paths = getattr(row, "paths", None) or {}
+            if paths.get("script_status") != "running":
+                return False
+            paths["script_cancel"] = True
+            store.cancel_requested = episode_id
+            return True
+
         @staticmethod
         def script_state(paths):
             p = paths or {}
@@ -496,6 +505,31 @@ def test_episode_script_idempotent_when_scripted(m1_client):
 
 def test_episode_script_404(m1_client):
     assert m1_client.post("/episodes/missing/script").status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# /episodes/{id}/cancel-script  → flag a running script gen to stop            #
+# --------------------------------------------------------------------------- #
+def test_cancel_script_flags_running_episode(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.episodes["e1"] = _EpRow({"script_status": "running"})  # type: ignore[attr-defined]
+    resp = m1_client.post("/episodes/e1/cancel-script")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cancelled"] is True
+    assert resp.json()["script_status"] == "running"
+    assert m1_client.store.cancel_requested == "e1"  # type: ignore[attr-defined]
+
+
+def test_cancel_script_noop_when_not_running(m1_client):
+    _seed_series(m1_client.store)  # type: ignore[attr-defined]
+    m1_client.store.episodes["e1"] = _EpRow({"script_status": "done"})  # type: ignore[attr-defined]
+    resp = m1_client.post("/episodes/e1/cancel-script")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_cancel_script_404(m1_client):
+    assert m1_client.post("/episodes/missing/cancel-script").status_code == 404
 
 
 # --------------------------------------------------------------------------- #

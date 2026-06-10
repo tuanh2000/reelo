@@ -245,6 +245,24 @@ export async function generateEpisodeScript(episodeId: string): Promise<EpisodeS
   return data.episode;
 }
 
+/**
+ * Stop an in-flight script generation to stop burning tokens. Flags the running
+ * `generate_script` worker to abort before its next model call (the chunk /
+ * parse-retry loop is what spends Claude tokens). Cooperative: the call already
+ * in flight finishes, then it stops and the episode is recorded `cancelled`
+ * (a clean draft again, ready to start over). `cancelled=false` means nothing was
+ * running to stop (already done/error or never started) — a harmless no-op.
+ */
+export async function cancelScript(
+  episodeId: string,
+): Promise<{ cancelled: boolean; scriptStatus: ScriptStatus | null }> {
+  const data = await request<{ cancelled: boolean; script_status?: ScriptStatus | null }>(
+    `/episodes/${episodeId}/cancel-script`,
+    { method: "POST" },
+  );
+  return { cancelled: data.cancelled, scriptStatus: data.script_status ?? null };
+}
+
 /** Result of a destructive episode reset ("Làm lại từ đầu"). */
 export interface ResetResult {
   episode: EpisodeSpec;
@@ -282,7 +300,7 @@ export interface EpisodeAssets {
   thumbnails: string[];
 }
 /** Lazy script-gen progress surfaced on GET /episodes/{id} (workspace polls it). */
-export type ScriptStatus = "running" | "done" | "error";
+export type ScriptStatus = "running" | "done" | "error" | "cancelled";
 /**
  * Most-recent / active produce job for an episode (workspace state recovery).
  * Lets the workspace rebuild the "đang sản xuất" view from the BACKEND after a
