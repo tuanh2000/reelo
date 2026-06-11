@@ -311,6 +311,44 @@ class VoiceSampleResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Custom voice library (shared OmniVoice voice-clone references)               #
+# --------------------------------------------------------------------------- #
+class CustomVoiceItem(BaseModel):
+    """One entry in the shared OmniVoice voice-clone library.
+
+    A cross-tenant, read-public catalog item: any logged-in user sees every
+    voice so they can reuse it instead of re-uploading a reference clip. We do
+    NOT expose the creator's identity (only ``is_owner`` for the requester) nor
+    the raw audio key — the clip is fetched through ``GET /voices/{id}/preview``.
+    ``transcript`` is returned so the UI can show what the sample says.
+    """
+
+    id: str
+    name: str
+    language: str | None = None
+    transcript: str
+    duration_s: float | None = None
+    is_owner: bool = False
+    created_at: str | None = None
+
+
+class CustomVoiceListResponse(BaseModel):
+    voices: list[CustomVoiceItem]
+
+
+class CustomVoicePreviewResponse(BaseModel):
+    """A time-limited URL to listen to a library voice's reference clip."""
+
+    url: str
+
+
+class ApplyCustomVoiceRequest(BaseModel):
+    """Body of ``POST /series/{id}/voice/custom`` — pick a library voice."""
+
+    voice_id: str
+
+
+# --------------------------------------------------------------------------- #
 # Media curation (M2-12 / M2-13) — web-* candidate selection (photo OR clip)   #
 # --------------------------------------------------------------------------- #
 class ImageCandidateModel(BaseModel):

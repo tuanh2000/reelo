@@ -14,7 +14,16 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import ApiKey, Episode, GenJobRow, Series, UsageLog, User, UserSettings
+from db.models import (
+    ApiKey,
+    CustomVoice,
+    Episode,
+    GenJobRow,
+    Series,
+    UsageLog,
+    User,
+    UserSettings,
+)
 
 # Default account-level providers when a user has never configured anything.
 # script/image stay unset (None) so the UI gate forces the user to choose one;
@@ -489,6 +498,70 @@ class ApiKeyRepo:
         )
 
 
+class CustomVoiceRepo:
+    """Shared OmniVoice voice-clone library (``custom_voices``).
+
+    Reads are NOT user-scoped — the library is cross-tenant by design (any user
+    reuses any voice). Writes carry ``created_by_user_id`` so deletes can be
+    restricted to the creator. The platform-lead's per-tenant invariant is
+    deliberately relaxed here; callers must keep this table read-public.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.s = session
+
+    async def list_all(self) -> list[CustomVoice]:
+        """Every voice in the shared library, newest first (cross-tenant)."""
+        res = await self.s.execute(
+            select(CustomVoice).order_by(CustomVoice.created_at.desc())
+        )
+        return list(res.scalars().all())
+
+    async def get(self, voice_id: str) -> CustomVoice | None:
+        """Fetch one voice by id (no user scoping — the library is shared)."""
+        return await self.s.get(CustomVoice, voice_id)
+
+    async def create(
+        self,
+        *,
+        voice_id: str,
+        created_by_user_id: str,
+        name: str,
+        audio_key: str,
+        transcript: str,
+        language: str | None,
+        duration_s: float | None,
+    ) -> CustomVoice:
+        row = CustomVoice(
+            id=voice_id,
+            created_by_user_id=created_by_user_id,
+            name=name,
+            audio_key=audio_key,
+            transcript=transcript,
+            language=language,
+            duration_s=duration_s,
+        )
+        self.s.add(row)
+        await self.s.flush()
+        return row
+
+    async def delete_owned(self, voice_id: str, user_id: str) -> str:
+        """Delete a voice the user created. Returns the outcome.
+
+        ``"deleted"`` on success, ``"missing"`` if no such voice, ``"forbidden"``
+        if it exists but ``user_id`` is not its creator. The caller removes the
+        backing audio object from storage on ``"deleted"``.
+        """
+        row = await self.get(voice_id)
+        if row is None:
+            return "missing"
+        if row.created_by_user_id != user_id:
+            return "forbidden"
+        await self.s.delete(row)
+        await self.s.flush()
+        return "deleted"
+
+
 class UsageRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.s = session
@@ -524,5 +597,6 @@ __all__ = [
     "EpisodeRepo",
     "GenJobRepo",
     "ApiKeyRepo",
+    "CustomVoiceRepo",
     "UsageRepo",
 ]

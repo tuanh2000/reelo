@@ -7,7 +7,7 @@ owning module fills in logic. Routers are registered in ``web.app`` via
 
 Ownership:
 - ``wizard``, ``episodes``, ``style``, ``series``  → Module 1 (reelo-scriptwriting)
-- ``generation``, ``publish``                       → Module 2 (reelo-video-generator)
+- ``generation``, ``publish``, ``voices``           → Module 2 (reelo-video-generator)
 - ``providers``, ``keys``, ``usage``, ``settings``  → Module 3 (reelo-ai-services)
 - ``files`` (local-storage serving), ``health``     → platform-lead
 """
@@ -28,6 +28,7 @@ from web.routers import (
     settings,
     style,
     usage,
+    voices,
     wizard,
 )
 
@@ -45,6 +46,7 @@ def include_all(app: FastAPI) -> None:
     app.include_router(settings.router)
     app.include_router(keys.router)
     app.include_router(usage.router)
+    app.include_router(voices.router)
     app.include_router(files.router)
 
 

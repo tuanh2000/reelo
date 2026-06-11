@@ -6,7 +6,7 @@ Every resource is scoped by ``user_id`` (multi-tenant, integration §5). The
 platform-lead.
 
 Tables: ``users``, ``series``, ``episodes``, ``gen_jobs``, ``api_keys``,
-``usage_log``.
+``usage_log``, ``custom_voices``.
 """
 
 from __future__ import annotations
@@ -175,6 +175,42 @@ class ApiKey(Base, TimestampMixin):
     valid: Mapped[bool | None] = mapped_column()  # last validate_key result (M3-5)
 
 
+class CustomVoice(Base, TimestampMixin):
+    """A named, reusable OmniVoice voice-clone reference — a SHARED library row.
+
+    Unlike every other table this is intentionally NOT read-scoped by
+    ``user_id``: it is a cross-tenant public library. Any logged-in user can
+    browse and reuse a voice another user created, so they don't have to re-enter
+    the reference clip + transcript + language every time. Only the creator
+    (``created_by_user_id``) may delete one.
+
+    A voice is created when a user sets up OmniVoice clone and gives the upload a
+    ``name``. The normalized reference clip (wav 24 kHz mono) lives in object
+    storage under a GLOBAL prefix (``custom-voices/<id>/sample.wav``) — not under
+    the creator's per-user/per-series prefix — so it stays readable when a
+    different tenant produces with it. Selecting a voice snapshots
+    ``(audio_key, transcript, language)`` into a series' ``VoiceConfig`` (clone
+    mode); the audio object itself is referenced, never copied.
+
+    ``created_by_user_id`` is ``ON DELETE SET NULL`` so a deleted account does not
+    take its shared voices down with it (the library entry survives, orphaned).
+    Privacy note: the reference clip is the user's actual voice and is exposed to
+    every tenant by design — keep that in mind before adding identity fields.
+    """
+
+    __tablename__ = "custom_voices"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    audio_key: Mapped[str] = mapped_column(String(512), nullable=False)  # global storage key
+    transcript: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str | None] = mapped_column(String(32))
+    duration_s: Mapped[float | None] = mapped_column(Float)  # measured at upload (display)
+
+
 class UsageLog(Base):
     """Per-user usage / cost record (M3-6)."""
 
@@ -201,4 +237,5 @@ __all__ = [
     "GenJobRow",
     "ApiKey",
     "UsageLog",
+    "CustomVoice",
 ]
