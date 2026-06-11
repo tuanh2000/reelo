@@ -225,6 +225,7 @@ function JobRow({ job, onRetry }: { job: GenJob; onRetry?: (childId: string) => 
     running: { c: "var(--brand)", t: "Đang chạy", ic: "loader" },
     queued: { c: "var(--text-3)", t: "Trong hàng đợi", ic: "clock" },
     error: { c: "#dc2626", t: "Lỗi", ic: "alert-triangle" },
+    paused: { c: "#f59e0b", t: "Tạm dừng", ic: "pause" },
   } as const;
   const st = stateMap[job.state];
   const isError = job.state === "error";

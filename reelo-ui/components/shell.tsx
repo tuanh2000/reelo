@@ -6,6 +6,61 @@ import React from "react";
 import { Icon, Badge, Button, Avatar, Progress } from "./ui";
 import { Wordmark } from "./logo";
 import { type Nav, type Route } from "@/lib/data";
+import { getVoicePause, setVoicePause } from "@/lib/api";
+
+// Global voice-pause toggle (topbar). Pauses ALL voice synthesis so the shared
+// local GPU isn't slammed when several videos produce at once — image generation
+// + render keep running. Fetches the current flag on mount; toggles optimistically.
+function VoicePauseToggle() {
+  const [paused, setPaused] = React.useState<boolean | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    getVoicePause()
+      .then((p) => alive && setPaused(p))
+      .catch(() => {}); // no backend / not logged in → hide the control
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (paused === null) return null;
+
+  const toggle = async () => {
+    setBusy(true);
+    const prev = paused;
+    setPaused(!prev); // optimistic
+    try {
+      setPaused(await setVoicePause(!prev));
+    } catch {
+      setPaused(prev); // revert on failure
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      className="btn btn-secondary btn-sm"
+      onClick={() => void toggle()}
+      disabled={busy}
+      title={
+        paused
+          ? "Sinh voice đang TẠM DỪNG (bảo vệ GPU). Bấm để tiếp tục."
+          : "Tạm dừng sinh voice cho mọi video (ảnh/render vẫn chạy) — bảo vệ GPU khi sản xuất nhiều video cùng lúc."
+      }
+      style={
+        paused
+          ? { color: "#b45309", borderColor: "#f59e0b", background: "color-mix(in oklab, #f59e0b 14%, transparent)" }
+          : undefined
+      }
+    >
+      <Icon name={paused ? "play" : "pause"} size={14} />
+      {paused ? "Voice đang dừng" : "Tạm dừng voice"}
+    </button>
+  );
+}
 
 function NavItem({
   icon,
@@ -184,6 +239,8 @@ export function Topbar({
           <input placeholder="Tìm series, chủ đề…" />
         </div>
       )}
+
+      <VoicePauseToggle />
 
       <button className="icon-btn" title="Đổi giao diện sáng/tối" onClick={onToggleTheme}>
         <Icon name={theme === "dark" ? "sun" : "moon"} size={19} />

@@ -24,8 +24,12 @@ import json
 import logging
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+
+# Seconds between polls while voice is globally paused (held at a chunk boundary).
+VOICE_PAUSE_POLL_S = 3.0
 
 from clients.base import CallContext, ImageRequest, ProviderUnavailableError, Task
 from clients.registry import ServiceRegistry, get_registry
@@ -329,10 +333,23 @@ async def run_images(
                     else img_out,
                 }
                 reused.add(seg.index)
+                log.info(
+                    "resume: REUSED segment %d from storage — no provider call "
+                    "(hash=%s)", seg.index, want[:8],
+                )
                 await update_job(
                     user_id, job_id, state="done", progress=jobmod.PROGRESS_DONE
                 )
                 return None
+        if episode_id is not None:
+            # Reached only when reuse did NOT hit — log why so a "regenerated
+            # everything" report is diagnosable (no manifest entry vs cache miss).
+            had_hash = (prev.get("images") or {}).get(str(seg.index))
+            log.info(
+                "resume: segment %d NOT reused → generating "
+                "(want=%s, prev=%s)",
+                seg.index, want[:8], (had_hash[:8] if had_hash else None),
+            )
         async with sem:
             try:
                 # Curated path: download the user-chosen candidate for this segment
@@ -436,6 +453,7 @@ async def run_voice(
     episode_id: str | None = None,
     prev_manifest: dict | None = None,
     persist_lock: asyncio.Lock | None = None,
+    should_pause_voice: Callable[[], Awaitable[bool]] | None = None,
 ) -> voice.VoiceOutcome:
     """Run the voice stage, updating the voice job row around it.
 
@@ -444,6 +462,10 @@ async def run_voice(
     downloaded into the work folder, its duration probed, and the voice child
     marked ``done`` immediately — NO TTS call (saving ElevenLabs credit). Any
     doubt → normal (re)synthesis.
+
+    **Global pause:** when ``should_pause_voice`` returns True the stage holds at
+    the next chunk boundary (job state ``paused``) and polls until it clears, so the
+    user can keep the shared local GPU cool while many videos produce at once.
     """
     await update_job(user_id, voice_job_id, state="running", progress=jobmod.PROGRESS_START)
     # Resume: reuse the cached voiceover when unchanged + still in storage.
@@ -501,12 +523,28 @@ async def run_voice(
             _vpct[0] = pct
             await update_job(user_id, voice_job_id, progress=pct)
 
+    async def _before_chunk(index: int) -> None:
+        # Global pause gate: hold at the chunk boundary while voice is paused so the
+        # shared GPU stays idle; flip the job to ``paused`` for the UI, back to
+        # ``running`` on resume. No-op when no pause check is wired (tests).
+        if should_pause_voice is None:
+            return
+        held = False
+        while await should_pause_voice():
+            if not held:
+                held = True
+                await update_job(user_id, voice_job_id, state="paused")
+            await asyncio.sleep(VOICE_PAUSE_POLL_S)
+        if held:
+            await update_job(user_id, voice_job_id, state="running")
+
     try:
         outcome = await voice.synth_voice(
             series, lo, ctx, registry=registry,
             on_chunk_reuse=_reuse_chunk,
             on_chunk_done=_chunk_done,
             on_progress=_voice_progress,
+            before_chunk=_before_chunk,
         )
     except Exception as exc:  # noqa: BLE001
         await update_job(
@@ -636,6 +674,7 @@ async def run_produce_episode(
     *,
     registry: ServiceRegistry | None = None,
     work_root: Path | None = None,
+    should_pause_voice: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict:
     """Full produce pipeline for one episode. The worker entrypoint calls this.
 
@@ -712,7 +751,7 @@ async def run_produce_episode(
         run_voice(
             spec, lo, ctx, seeded.voice_id, user_id, registry=reg,
             ep=ep, episode_id=episode_id, prev_manifest=prev_manifest,
-            persist_lock=persist_lock,
+            persist_lock=persist_lock, should_pause_voice=should_pause_voice,
         )
     )
     images_task = asyncio.create_task(

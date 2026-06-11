@@ -26,6 +26,7 @@ import {
   resetEpisode,
   resumeProduction,
   cancelScript,
+  generateEpisodeScript,
   ApiError,
 } from "@/lib/api";
 
@@ -96,6 +97,8 @@ function EpisodeRow({
   resumingProd,
   onStopScript,
   stopping,
+  onRetryScript,
+  retrying,
 }: {
   ep: Episode;
   idx: number;
@@ -107,6 +110,8 @@ function EpisodeRow({
   resumingProd?: boolean;
   onStopScript?: (ep: Episode) => void;
   stopping?: boolean;
+  onRetryScript?: (ep: Episode) => void;
+  retrying?: boolean;
 }) {
   const st = EP_STATUS[ep.status];
   const act = epAction(ep);
@@ -120,6 +125,9 @@ function EpisodeRow({
   // "Dừng": only while the script is actively being written. Flags the worker to
   // stop before its next model call so it stops burning Claude tokens.
   const canStopScript = !!onStopScript && ep.scriptStatus === "running";
+  // "Thử lại": script gen failed (3 lần thử/chunk vẫn lỗi) → explicit user-driven
+  // retry. We never auto-retry after a failure; the user decides via this button.
+  const canRetryScript = !!onRetryScript && ep.scriptStatus === "error";
   return (
     <div className="card" style={{ boxShadow: "none", display: "flex", alignItems: "center", gap: 14, padding: 13 }}>
       <span
@@ -145,7 +153,16 @@ function EpisodeRow({
           {ep.title}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
-          {act.badge ? (
+          {ep.scriptStatus === "error" ? (
+            <span
+              className="status-pill"
+              style={{ ["--s" as any]: "#dc2626", fontSize: 12 } as React.CSSProperties}
+              title="Viết kịch bản thất bại sau 3 lần thử — bấm “Thử lại” để chạy lại"
+            >
+              <span className="status-dot" />
+              Lỗi viết kịch bản
+            </span>
+          ) : act.badge ? (
             <Badge tone="brand">
               <Icon name="loader" size={12} className="spin" />
               {act.badge.label}
@@ -211,9 +228,21 @@ function EpisodeRow({
           <Icon name={resetting ? "loader" : "rotate-ccw"} size={15} className={resetting ? "spin" : ""} />
         </button>
       )}
-      <Button variant={act.variant} size="sm" icon={act.icon} onClick={() => nav({ name: act.to, series, episode: ep })}>
-        {act.label}
-      </Button>
+      {canRetryScript ? (
+        <Button
+          variant="primary"
+          size="sm"
+          icon={retrying ? "loader" : "refresh-cw"}
+          disabled={retrying}
+          onClick={() => onRetryScript?.(ep)}
+        >
+          {retrying ? "Đang thử lại…" : "Thử lại"}
+        </Button>
+      ) : (
+        <Button variant={act.variant} size="sm" icon={act.icon} onClick={() => nav({ name: act.to, series, episode: ep })}>
+          {act.label}
+        </Button>
+      )}
     </div>
   );
 }
@@ -413,6 +442,29 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
       setResetError(e instanceof Error ? e.message : "Không dừng được việc viết kịch bản.");
     } finally {
       setStoppingId(null);
+    }
+  };
+
+  // "Thử lại" per episode — script gen failed (3 lần thử/chunk vẫn lỗi). User
+  // decides to re-run (we never auto-retry). Re-enqueues script gen, flips the
+  // badge to "đang viết", and opens the workspace to watch progress.
+  const [retryingId, setRetryingId] = React.useState<string | null>(null);
+  const doRetryScript = async (ep: Episode) => {
+    setRetryingId(ep.id);
+    setResetError(null);
+    try {
+      if (!isDemo) await generateEpisodeScript(ep.id);
+      setSeries((prev) => ({
+        ...prev,
+        episodes: prev.episodes.map((e) =>
+          e.id === ep.id ? { ...e, scriptStatus: "running" } : e,
+        ),
+      }));
+      nav({ name: "workspace", series, episode: ep });
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : "Không thử lại được việc viết kịch bản.");
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -617,6 +669,8 @@ function ProjectInner({ nav, route }: { nav: Nav; route: Route }) {
             resumingProd={resumingId === ep.id}
             onStopScript={(e) => void doStopScript(e)}
             stopping={stoppingId === ep.id}
+            onRetryScript={(e) => void doRetryScript(e)}
+            retrying={retryingId === ep.id}
           />
         ))}
         <button

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <title>Reelo app icon</title>
+  <rect width="100" height="100" rx="24" fill="#ef3e36"></rect>
+  <g transform="translate(50 50) scale(1.12) translate(-50 -50)">
+    <path d="M22 29 L22 71 L54 50 Z" fill="#ffffff" opacity="0.2"></path>
+    <path d="M34 29 L34 71 L66 50 Z" fill="#ffffff" opacity="0.45"></path>
+    <path d="M46 29 L46 71 L78 50 Z" fill="#ffffff"></path></g>
+</svg>

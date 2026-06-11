@@ -25,7 +25,9 @@ from db.repository import ApiKeyRepo
 from web._provider_keys import TASK_TO_FIELD, resolve_key_ref
 from web.deps import CurrentUser, DbSession
 from web.routers.providers import _PROVIDER_NOTES
-from web.schemas import ProviderKeyItem, ProviderKeysResponse
+from web.schemas import ProviderKeyItem, ProviderKeysResponse, VoicePauseState
+from worker.control import is_voice_paused, set_voice_paused
+from worker.enqueue import get_arq_pool
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -81,6 +83,25 @@ async def get_provider_keys(
     return ProviderKeysResponse(
         script=grouped["script"], image=grouped["image"], voice=grouped["voice"]
     )
+
+
+# --------------------------------------------------------------------------- #
+# Global voice pause — protect the single local GPU when producing many videos #
+# --------------------------------------------------------------------------- #
+@router.get("/voice-pause", response_model=VoicePauseState)
+async def get_voice_pause(user_id: CurrentUser) -> VoicePauseState:
+    """Read the global voice-pause flag (shared by every produce job)."""
+    pool = await get_arq_pool()
+    return VoicePauseState(paused=await is_voice_paused(pool))
+
+
+@router.post("/voice-pause", response_model=VoicePauseState)
+async def set_voice_pause(body: VoicePauseState, user_id: CurrentUser) -> VoicePauseState:
+    """Pause / resume voice synthesis globally. Voice jobs hold at the next chunk
+    boundary while paused (image/render keep running); resuming lets them continue."""
+    pool = await get_arq_pool()
+    await set_voice_paused(pool, body.paused)
+    return VoicePauseState(paused=body.paused)
 
 
 __all__ = ["router"]

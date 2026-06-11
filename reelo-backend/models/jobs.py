@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-JobState = Literal["done", "running", "queued", "error"]
+JobState = Literal["done", "running", "queued", "error", "paused"]
 
 
 class GenJob(BaseModel):

@@ -76,7 +76,7 @@ def _script_error_message(exc: Exception, provider: str | None) -> str:
       malformed output.
     Anything else falls back to ``"<ClassName>: <message>"``.
     """
-    from module1.episode_script import ScriptGenerationError
+    from module1.episode_script import MAX_PARSE_RETRIES, ScriptGenerationError
 
     msg = str(exc).strip() or repr(exc)
     prov = f" (provider: {provider})" if provider else ""
@@ -88,7 +88,10 @@ def _script_error_message(exc: Exception, provider: str | None) -> str:
             f"(thiếu key, bị chặn, hoặc rate-limit) — {msg}"
         )
     if isinstance(exc, ScriptGenerationError):
-        return f"ScriptGenerationError{prov}: model trả về kết quả không hợp lệ — {msg}"
+        return (
+            f"ScriptGenerationError{prov}: đã thử lại {MAX_PARSE_RETRIES} lần nhưng "
+            f"model vẫn trả kết quả không hợp lệ — {msg}. Bấm “Thử lại” để chạy lại."
+        )
     return f"{type(exc).__name__}{prov}: {msg}"
 
 
@@ -103,10 +106,21 @@ async def produce_episode(ctx: dict, user_id: str, episode_id: str) -> dict:
     log.info("produce_episode received user_id=%s episode_id=%s", user_id, episode_id)
     # Imported lazily so the worker module imports cleanly without Module 2 deps.
     from module2.runner import run_produce_episode
+    from worker.control import is_voice_paused
+
+    # Global voice-pause gate: the runner polls this between voice chunks so the
+    # user can pause ALL voice synthesis (protect the shared local GPU) while many
+    # videos produce at once. Reads the Arq Redis the worker already holds.
+    redis = ctx.get("redis")
+
+    async def _should_pause_voice() -> bool:
+        return await is_voice_paused(redis)
 
     call_ctx = await build_call_context(ctx, user_id)
     try:
-        return await run_produce_episode(user_id, episode_id, call_ctx)
+        return await run_produce_episode(
+            user_id, episode_id, call_ctx, should_pause_voice=_should_pause_voice
+        )
     finally:
         try:
             await flush_call_context_usage(call_ctx)

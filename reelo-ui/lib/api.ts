@@ -669,6 +669,25 @@ export async function getProviderKeys(): Promise<ProviderKeys> {
   return request<ProviderKeys>("/settings/providers");
 }
 
+/** Global voice-pause flag (shared across every produce job) ---------------- */
+/**
+ * Read whether voice synthesis is globally paused. While paused, every voice job
+ * holds at its next chunk boundary so the shared local GPU stays cool; image
+ * generation + render are unaffected.
+ */
+export async function getVoicePause(): Promise<boolean> {
+  const data = await request<{ paused: boolean }>("/settings/voice-pause");
+  return data.paused;
+}
+/** Pause (true) or resume (false) voice synthesis globally. Returns the new state. */
+export async function setVoicePause(paused: boolean): Promise<boolean> {
+  const data = await request<{ paused: boolean }>("/settings/voice-pause", {
+    method: "POST",
+    json: { paused },
+  });
+  return data.paused;
+}
+
 /** Per-series readiness (chosen toolset + per-user keys) ------------------ */
 export interface SeriesReadiness {
   series_id: string;

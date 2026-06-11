@@ -222,7 +222,14 @@ def test_start_generation_seeds_parent_and_enqueues(m2_client):
     assert all(f != "generate_script" for f, _ in store.enqueued)
 
 
-def test_start_generation_unscripted_enqueues_script_too(m2_client):
+def test_start_generation_unscripted_enqueues_produce_only(m2_client):
+    """An unscripted produce enqueues ONLY produce_episode — NOT generate_script.
+
+    Scripting is owned solely by produce's ensure_scripted (step 0). Enqueuing a
+    separate generate_script would race it: two non-deterministic LLM scripts, one
+    saved to spec_json while images are built from the other → every asset later
+    looks "changed" and regenerates (orphaned images). Regression guard for that.
+    """
     store = m2_client.store
     ep = EpisodeSpec(episode_id="e2", title="Draft", order=2)  # no segments
     store.series["s1"] = _spec(ep=ep)
@@ -230,8 +237,8 @@ def test_start_generation_unscripted_enqueues_script_too(m2_client):
     resp = m2_client.post("/generation/start", json={"series_id": "s1", "episode_id": "e2"})
     assert resp.status_code == 200, resp.text
     funcs = [f for f, _ in store.enqueued]
-    assert "generate_script" in funcs
     assert "produce_episode" in funcs
+    assert "generate_script" not in funcs  # single script-gen owner (no race)
     # cost estimate derived from target/density even when unscripted
     assert resp.json()["cost_estimate"]["images"] > 0
 

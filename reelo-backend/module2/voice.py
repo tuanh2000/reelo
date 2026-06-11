@@ -223,6 +223,7 @@ async def synth_voice(
     on_chunk_reuse: Callable[[int, str, Path], Awaitable[bool]] | None = None,
     on_chunk_done: Callable[[int, str, Path], Awaitable[None]] | None = None,
     on_progress: Callable[[float], Awaitable[None]] | None = None,
+    before_chunk: Callable[[int], Awaitable[None]] | None = None,
 ) -> VoiceOutcome:
     """Synthesize narration → ``voice/voice.mp3`` (chunk + concat) and probe duration.
 
@@ -284,6 +285,10 @@ async def synth_voice(
         if on_chunk_reuse is not None:
             reused = await on_chunk_reuse(i, text, part)
         if not reused:
+            # Pause gate: block here while voice is globally paused (no GPU work
+            # happens until it clears). Reused chunks skip it (no synthesis).
+            if before_chunk is not None:
+                await before_chunk(i)
             req = VoiceRequest(voice_id=series.voice.voice_id, text=text, settings=settings)
             if clone is not None:
                 req.ref_audio = clone["ref_audio"]

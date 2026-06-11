@@ -508,3 +508,14 @@ class UsageRow(BaseModel):
 class UsageResponse(BaseModel):
     usage: list[UsageRow]
     total_cost: float | None = None
+
+
+class VoicePauseState(BaseModel):
+    """Global voice-pause flag (``GET`` / ``POST /settings/voice-pause``).
+
+    When ``paused`` is true, the worker holds every voice job at the next chunk
+    boundary so the shared local GPU (OmniVoice) isn't slammed while several videos
+    produce at once. Image generation + render are unaffected.
+    """
+
+    paused: bool = False

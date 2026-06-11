@@ -106,7 +106,7 @@ export interface ScriptSegment {
   img: string;
 }
 
-export type JobState = "done" | "running" | "queued" | "error";
+export type JobState = "done" | "running" | "queued" | "error" | "paused";
 
 export interface GenJob {
   id: string;

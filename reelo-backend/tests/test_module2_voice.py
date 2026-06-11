@@ -243,3 +243,35 @@ async def test_synth_voice_reuses_cached_chunk(tmp_path, monkeypatch):
     assert done_idx == [2, 3]  # persisted only the freshly-synthesized chunks
     assert len(outcome.parts) == 3  # all 3 parts present (1 cached + 2 fresh) for concat
     assert progress == sorted(progress) and progress[-1] == 1.0  # bar advances → 100%
+
+
+async def test_synth_voice_calls_before_chunk_gate(tmp_path, monkeypatch):
+    """The pause gate (before_chunk) runs before EACH freshly-synthesized chunk."""
+    lo = layout_for(tmp_path)
+    lo.voice_dir.mkdir(parents=True)
+    lo.script_md.write_text("\n\n===\n\n".join(["a" * 100, "b" * 100]))
+    client = _FakeVoiceClient(
+        ServiceConfig("fake", {"tasks": {"generate-voice": {"char_limit": 150}}})
+    )
+
+    async def fake_concat(parts, out_path, **kw):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"joined")
+        return Path(out_path)
+
+    async def fake_probe(path, **kw):
+        return 10.0
+
+    monkeypatch.setattr(voice.ffmpeg, "concat_audio", fake_concat)
+    monkeypatch.setattr(voice.ffmpeg, "probe_duration", fake_probe)
+
+    gate: list[int] = []
+
+    async def before(i):
+        gate.append(i)
+
+    ctx = CallContext(user_id="u", keys=KeyStore(Cipher(b"k" * 32)), usage=UsageLogger())
+    await voice.synth_voice(
+        _series(), lo, ctx, registry=_FakeRegistry(client), before_chunk=before
+    )
+    assert gate == [1, 2]  # gated once per chunk, before synthesis

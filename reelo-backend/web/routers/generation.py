@@ -32,9 +32,15 @@ async def start_generation(
 ) -> StartGenerationResponse:
     """Ensure scripted, seed parent job, enqueue produce → ``{jobId, costEstimate}``.
 
-    - If the episode has no segments, also enqueue Module 1's ``generate_script``
-      (the worker's produce step 0 ensures scripting too, but enqueuing early lets
-      the UI show progress sooner). The cost estimate falls back to derived counts.
+    - Scripting is owned by EXACTLY ONE path: the worker's ``produce_episode`` step
+      0 (``ensure_scripted``). We must NOT also enqueue ``generate_script`` here:
+      both would run script generation concurrently, and because the LLM isn't
+      deterministic the two scripts differ — one ends up in ``spec_json`` while the
+      images are generated from the other, so every asset is later seen as
+      "changed" and regenerated (orphaned old images). The workspace already runs
+      its own ``generate_script`` for the "đang viết kịch bản" UI and gates the
+      Produce button until the script is done, so a normal produce finds segments
+      and step 0 is a no-op.
     - The returned ``jobId`` is the parent ``gen_jobs`` id the UI polls.
     """
     found = await find_series_for_episode(db, user_id, body.episode_id)
@@ -63,8 +69,9 @@ async def start_generation(
     estimate = jobmod.cost_estimate(spec, ep)
     parent_id = await jobmod.seed_parent(GenJobRepo(db), user_id, ep)
 
-    if not ep.segments:
-        await enqueue_job("generate_script", user_id, body.episode_id)
+    # Single script-gen owner: produce's ensure_scripted (step 0). Do NOT also
+    # enqueue generate_script here — concurrent script gens desync spec_json from
+    # the generated images (see docstring).
     await enqueue_job("produce_episode", user_id, body.episode_id)
 
     return StartGenerationResponse(job_id=parent_id, cost_estimate=estimate)
