@@ -19,9 +19,27 @@ def redis_settings() -> RedisSettings:
 
 
 async def on_startup(ctx: dict) -> None:
-    """Worker startup hook — place to warm shared resources (registry, storage)."""
-    # Module 3 will attach a ServiceRegistry here; kept minimal for Phase 1.
+    """Worker startup hook — warm shared resources + sweep zombie jobs.
+
+    After a (re)start nothing from a previous worker process is still running, so
+    any gen_job left ``running``/``paused`` is a zombie (crash / OOM / redeploy /
+    a job_timeout that cancelled the task before it could record the error). We
+    flip those to ``error`` so the UI never spins on a dead job. Best-effort: a DB
+    hiccup here must not stop the worker from booting.
+    """
+    import logging
+
     ctx["settings"] = get_settings()
+    try:
+        from module2.runner import reconcile_stale_jobs
+
+        flipped = await reconcile_stale_jobs()
+        if flipped:
+            logging.getLogger("reelo.worker").info(
+                "on_startup: marked %d stale running/paused job(s) as error", flipped
+            )
+    except Exception as exc:  # noqa: BLE001 — startup sweep is best-effort
+        logging.getLogger("reelo.worker").warning("on_startup: stale-job sweep failed (%s)", exc)
 
 
 async def on_shutdown(ctx: dict) -> None:

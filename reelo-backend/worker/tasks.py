@@ -21,6 +21,7 @@ Both build a :class:`clients.base.CallContext` from ``user_id`` (Module 3 §8).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from clients.base import CallContext, InvalidKeyError, ProviderUnavailableError
@@ -105,7 +106,7 @@ async def produce_episode(ctx: dict, user_id: str, episode_id: str) -> dict:
     """
     log.info("produce_episode received user_id=%s episode_id=%s", user_id, episode_id)
     # Imported lazily so the worker module imports cleanly without Module 2 deps.
-    from module2.runner import run_produce_episode
+    from module2.runner import fail_unfinished_jobs, run_produce_episode
     from worker.control import is_voice_paused
 
     # Global voice-pause gate: the runner polls this between voice chunks so the
@@ -121,6 +122,26 @@ async def produce_episode(ctx: dict, user_id: str, episode_id: str) -> dict:
         return await run_produce_episode(
             user_id, episode_id, call_ctx, should_pause_voice=_should_pause_voice
         )
+    except BaseException as exc:  # noqa: BLE001 — incl. CancelledError (arq job_timeout)
+        # Last line of defence against zombie jobs: any non-terminal child/parent
+        # for this episode is flipped to ``error`` so the UI never spins on a job
+        # killed mid-stage (e.g. the job_timeout cancelling the render). The
+        # in-stage handlers already mark their own job; this catches the rest.
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        log.warning(
+            "produce_episode failed user_id=%s episode_id=%s cancelled=%s: %r",
+            user_id, episode_id, cancelled, exc,
+        )
+        message = (
+            "Sản xuất bị hủy do job vượt quá thời gian cho phép (worker_job_timeout)."
+            if cancelled
+            else f"{type(exc).__name__}: {exc}"
+        )
+        try:
+            await fail_unfinished_jobs(user_id, episode_id, message)
+        except Exception as rec_exc:  # noqa: BLE001 — reconcile is best-effort
+            log.warning("produce_episode: could not reconcile jobs (%s)", rec_exc)
+        raise
     finally:
         try:
             await flush_call_context_usage(call_ctx)

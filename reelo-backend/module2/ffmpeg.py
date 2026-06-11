@@ -14,6 +14,7 @@ targets the skill scripts; ffmpeg/ffprobe have their own argv + parsing here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 from pathlib import Path
@@ -109,8 +110,25 @@ def build_concat_cmd(list_file: Path, out_path: Path) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Exec wrappers                                                               #
 # --------------------------------------------------------------------------- #
+async def _kill_proc(proc: "asyncio.subprocess.Process") -> None:
+    """Best-effort kill of a still-running child + reap it (no orphan ffmpeg)."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        await proc.wait()
+
+
 async def run(argv: list[str], *, timeout: float | None = None) -> str:
-    """Run an ffmpeg/ffprobe argv; return stdout. Raise :class:`FFmpegError` on failure."""
+    """Run an ffmpeg/ffprobe argv; return stdout. Raise :class:`FFmpegError` on failure.
+
+    On our own ``timeout`` OR an external cancellation (e.g. the arq worker
+    cancelling the whole produce job when it hits ``worker_job_timeout``), the
+    child process is **killed** before we propagate. Without this an interrupted
+    encode keeps running orphaned — we saw a 4-minute mux finish (and waste CPU)
+    long after its job was already declared dead.
+    """
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
@@ -119,9 +137,13 @@ async def run(argv: list[str], *, timeout: float | None = None) -> str:
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+        await _kill_proc(proc)
         raise FFmpegError(argv, -1, f"timed out after {timeout}s") from exc
+    except asyncio.CancelledError:
+        # The job was cancelled out from under us (arq job_timeout / shutdown).
+        # Kill the encode so it doesn't outlive the job, then re-raise.
+        await _kill_proc(proc)
+        raise
     out = out_b.decode("utf-8", errors="replace")
     err = err_b.decode("utf-8", errors="replace")
     if proc.returncode != 0:

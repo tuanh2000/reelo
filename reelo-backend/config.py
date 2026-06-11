@@ -92,11 +92,17 @@ class Settings(BaseSettings):
 
     # ---- Worker -------------------------------------------------------------
     worker_max_jobs: int = Field(default=10, alias="WORKER_MAX_JOBS")
-    # Arq per-job wall-clock timeout (seconds). A multi-chunk script (long
-    # episodes) can legitimately exceed arq's 300s default, so we raise it; the
-    # *provider* fail-fast (clients/claude_cli.py per-call cap) is what prevents a
-    # single wedged CLI call from eating this whole budget.
-    worker_job_timeout: int = Field(default=1200, alias="WORKER_JOB_TIMEOUT")
+    # Arq per-job wall-clock timeout (seconds). This caps the WHOLE produce job —
+    # for a long video the render alone (N per-clip encodes + the final xfade/mux)
+    # is the bottleneck: ~55 clips ≈ 19 min of encoding + a few min of mux, which
+    # blew the old 1200s budget and left the render job a zombie at ~88% (arq
+    # cancels with CancelledError mid-mux). 3600s gives long videos real headroom;
+    # render now also resumes per-clip so a retry skips already-encoded clips. The
+    # *provider* fail-fast (clients/claude_cli.py per-call cap) still prevents a
+    # single wedged CLI call from eating this whole budget. Must stay > the
+    # renderer's mux_timeout/clip_timeout so an ffmpeg overrun surfaces as a clean
+    # FFmpegError (visible on the job) rather than an uncatchable arq cancel.
+    worker_job_timeout: int = Field(default=3600, alias="WORKER_JOB_TIMEOUT")
     # Total attempts per job. 1 = no auto-retry: tasks already do their own
     # internal retries (e.g. Module 1's ≤3 parse retries) and surface errors on
     # the episode, so an arq-level retry of a hung/failed job just multiplies the

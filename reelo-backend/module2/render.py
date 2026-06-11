@@ -369,6 +369,31 @@ def plan_render(
     )
 
 
+async def _clip_reusable(
+    clip: Path, media: Path, expected_d: float, *, tol: float = 0.25
+) -> bool:
+    """True iff a prior run's ``clip`` mp4 is still valid → skip re-encoding it.
+
+    Reuse only when ALL hold (any doubt → re-encode, which is always safe):
+    - the clip exists and is non-empty;
+    - it is NOT older than its source media (a regenerated image/clip invalidates
+      a stale render);
+    - it decodes to ~the expected duration (a clip truncated by an interrupted /
+      killed encode has no valid moov atom → ffprobe fails or the duration is off,
+      so we re-encode rather than mux a corrupt clip).
+    """
+    try:
+        st = clip.stat()
+        if st.st_size == 0:
+            return False
+        if st.st_mtime < Path(media).stat().st_mtime:
+            return False
+        dur = await ffmpeg.probe_duration(clip)
+    except (OSError, ffmpeg.FFmpegError):
+        return False
+    return abs(dur - expected_d) <= tol
+
+
 async def render_episode(
     image_paths: list[Path],
     narrations: list[str],
@@ -380,7 +405,7 @@ async def render_episode(
     music_path: Path | None = None,
     work_dir: Path | None = None,
     clip_timeout: float | None = 600,
-    mux_timeout: float | None = 1800,
+    mux_timeout: float | None = 3000,
     on_progress: Callable[[float], Awaitable[None]] | None = None,
 ) -> Path:
     """Render an episode → ``out_path`` (final.mp4). The only I/O entrypoint here.
@@ -443,6 +468,16 @@ async def render_episode(
         zip(plan.image_paths, plan.padded, plan.media_types)
     ):
         clip = work / f"clip_{i:02d}.mp4"
+        # Resume render: reuse a per-clip mp4 from a prior (interrupted) run instead
+        # of re-encoding it. The whole encode loop is the bulk of render wall-time;
+        # without this, an interrupted render (e.g. arq job_timeout) redoes ALL
+        # clips on every retry and never reaches the mux. See _clip_reusable for the
+        # validity checks (source not newer, decodes to ~the expected duration).
+        if await _clip_reusable(clip, media, d):
+            log.info("render clip %d/%d REUSED (unchanged) %s", i + 1, len(image_paths), media.name)
+            clip_paths.append(clip)
+            await _report(i + 1)
+            continue
         if kind == "video":
             cmd = build_video_clip_cmd(
                 media, clip, width=plan.width, height=plan.height, duration=d, index=i

@@ -196,6 +196,121 @@ async def _make_tone_mp3(path: Path, seconds: float) -> None:
     ])
 
 
+async def test_render_episode_reuses_existing_clips(tmp_path, monkeypatch):
+    """Resume render: a valid prior clip_NN.mp4 (newer than its image, right
+    duration) is reused — only the final xfade+mux ffmpeg runs, no per-clip
+    re-encode. This is what lets a render killed by the job_timeout finish on a
+    retry instead of redoing every clip."""
+    import os
+    import time
+
+    imgs = [tmp_path / f"{i}.png" for i in range(3)]
+    for p in imgs:
+        p.write_bytes(b"img")
+    narr = ["alpha beta gamma delta"] * 3
+    audio_dur = 30.0
+    plan = render.plan_render(imgs, narr, audio_dur, "16:9")
+
+    work = tmp_path / "clips"
+    work.mkdir()
+    later = time.time() + 10  # clips strictly NEWER than the images
+    for i in range(3):
+        c = work / f"clip_{i:02d}.mp4"
+        c.write_bytes(b"x" * 64)
+        os.utime(c, (later, later))
+
+    run_calls: list[list[str]] = []
+
+    async def fake_run(argv, *, timeout=None):
+        run_calls.append(argv)
+        return ""
+
+    async def fake_probe(path, *, timeout=60):
+        name = Path(path).name
+        if name.startswith("clip_"):
+            return plan.padded[int(name.split("_")[1].split(".")[0])]  # exact -> reusable
+        return audio_dur  # the voice-duration probe
+
+    monkeypatch.setattr(render.ffmpeg, "run", fake_run)
+    monkeypatch.setattr(render.ffmpeg, "probe_duration", fake_probe)
+
+    await render.render_episode(
+        imgs, narr, tmp_path / "v.mp3", tmp_path / "out.mp4", "16:9", work_dir=work
+    )
+    # 3 clips reused -> exactly ONE ffmpeg call (the xfade+mux), zero clip encodes.
+    assert len(run_calls) == 1
+
+
+async def test_render_episode_reencodes_clip_older_than_image(tmp_path, monkeypatch):
+    """A clip from before its image was (re)generated is stale → re-encoded (the
+    mtime guard in _clip_reusable), so a changed image never muxes a stale clip."""
+    import os
+    import time
+
+    work = tmp_path / "clips"
+    work.mkdir()
+    early = time.time() - 100  # clips OLDER than the images
+    for i in range(2):
+        c = work / f"clip_{i:02d}.mp4"
+        c.write_bytes(b"x" * 64)
+        os.utime(c, (early, early))
+    imgs = [tmp_path / f"{i}.png" for i in range(2)]
+    for p in imgs:
+        p.write_bytes(b"img")  # newer than the clips
+
+    run_calls: list[list[str]] = []
+
+    async def fake_run(argv, *, timeout=None):
+        run_calls.append(argv)
+        return ""
+
+    async def fake_probe(path, *, timeout=60):
+        return 30.0
+
+    monkeypatch.setattr(render.ffmpeg, "run", fake_run)
+    monkeypatch.setattr(render.ffmpeg, "probe_duration", fake_probe)
+
+    await render.render_episode(
+        imgs, ["alpha beta gamma delta"] * 2,
+        tmp_path / "v.mp3", tmp_path / "out.mp4", "16:9", work_dir=work,
+    )
+    # No reuse (clips older than images): 2 clip encodes + 1 mux = 3 ffmpeg calls.
+    assert len(run_calls) == 3
+
+
+async def test_ffmpeg_run_kills_child_on_cancel(monkeypatch):
+    """Cancelling render (e.g. arq job_timeout) must kill the ffmpeg child so a
+    heavy encode doesn't keep running orphaned after the job is gone."""
+    import asyncio as aio
+
+    state = {"killed": False}
+
+    class _FakeProc:
+        returncode = None
+
+        async def communicate(self):
+            await aio.sleep(60)  # block until the task is cancelled
+
+        def kill(self):
+            state["killed"] = True
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_exec(*a, **k):
+        return _FakeProc()
+
+    monkeypatch.setattr(ffmpeg.asyncio, "create_subprocess_exec", fake_exec)
+
+    task = aio.ensure_future(ffmpeg.run(["ffmpeg", "-y"]))
+    await aio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(aio.CancelledError):
+        await task
+    assert state["killed"] is True
+
+
 @needs_ffmpeg
 async def test_smoke_render_16x9(tmp_path):
     ctx = CallContext(user_id="u", keys=KeyStore(Cipher(b"k" * 32)), usage=UsageLogger())

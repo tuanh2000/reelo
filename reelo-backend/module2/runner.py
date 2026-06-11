@@ -28,11 +28,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-# Seconds between polls while voice is globally paused (held at a chunk boundary).
-VOICE_PAUSE_POLL_S = 3.0
-
 from clients.base import CallContext, ImageRequest, ProviderUnavailableError, Task
 from clients.registry import ServiceRegistry, get_registry
+from db.models import GenJobRow
 from db.repository import EpisodeRepo, GenJobRepo
 from db.session import session_scope
 from models.spec import EpisodeSpec, SeriesSpec
@@ -50,6 +48,9 @@ from module2.materialize import ProjectLayout
 log = logging.getLogger("reelo.module2.runner")
 
 IMAGE_CONCURRENCY = 3  # M2-8 (3-4 parallel image calls)
+
+# Seconds between polls while voice is globally paused (held at a chunk boundary).
+VOICE_PAUSE_POLL_S = 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -90,6 +91,77 @@ async def update_job(
             GenJobRepo(session), user_id, job_id,
             state=state, progress=progress, stderr=stderr,
         )
+
+
+# Job states that are NOT terminal (an interrupt left them mid-flight).
+_NONTERMINAL_STATES = ("queued", "running", "paused")
+
+
+def _render_failure_message(exc: BaseException) -> str:
+    """Short, user-facing reason for a render failure (cancel vs ffmpeg error)."""
+    if isinstance(exc, asyncio.CancelledError):
+        return (
+            "Render bị hủy do job vượt quá thời gian cho phép (worker_job_timeout) — "
+            "video quá dài cho ngân sách hiện tại. Bấm “Thử lại”: các clip đã dựng "
+            "sẽ được tái dùng nên lần sau nhanh hơn nhiều."
+        )
+    return str(exc).strip() or repr(exc)
+
+
+async def fail_unfinished_jobs(user_id: str, episode_id: str, message: str) -> int:
+    """Flip this episode's non-terminal produce jobs to ``error`` (no zombies).
+
+    Called when produce dies from an interrupt the in-stage handlers can't catch
+    (most importantly an arq ``job_timeout`` → ``CancelledError``, which is a
+    BaseException): the parent + any ``queued``/``running``/``paused`` child are
+    marked ``error`` so the UI shows a failure instead of a bar frozen at N%.
+    Idempotent + best-effort; returns the number of rows flipped.
+    """
+    async with session_scope() as session:
+        repo = GenJobRepo(session)
+        parent = await jobmod.find_parent_for_episode(repo, user_id, episode_id)
+        if parent is None:
+            return 0
+        children = await repo.children_for_episode(user_id, episode_id)
+        rows = [parent, *[c for c in children if c.parent_id == parent.id]]
+        flipped = 0
+        for r in rows:
+            if r.state in _NONTERMINAL_STATES:
+                r.state = "error"
+                if not r.stderr:
+                    r.stderr = message[-4000:]
+                flipped += 1
+        await session.flush()
+        return flipped
+
+
+async def reconcile_stale_jobs() -> int:
+    """Mark every ``running``/``paused`` gen_job as ``error`` (worker-startup sweep).
+
+    After a worker (re)start nothing from a previous process is still executing, so
+    any job left ``running``/``paused`` is a zombie — from a crash, an OOM kill, a
+    redeploy, or an arq ``job_timeout`` that cancelled the task before it could
+    record the error. Flipping them on startup guarantees the UI never spins on a
+    dead job. ``queued`` is left alone: arq persists the queue in Redis, so a
+    queued produce can still legitimately run after the restart. Single-worker
+    deployment assumed. Best-effort; returns the count flipped.
+    """
+    from sqlalchemy import select
+
+    async with session_scope() as session:
+        res = await session.execute(
+            select(GenJobRow).where(GenJobRow.state.in_(("running", "paused")))
+        )
+        rows = list(res.scalars().all())
+        for r in rows:
+            r.state = "error"
+            if not r.stderr:
+                r.stderr = (
+                    "Bị gián đoạn (worker khởi động lại hoặc hết thời gian). Bấm "
+                    "“Thử lại” — các asset/clip đã dựng sẽ được tái dùng."
+                )
+        await session.flush()
+        return len(rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -842,15 +914,24 @@ async def run_produce_episode(
                 on_progress=_render_progress,
             )
             subtitles.write_srt(narrations, voice_outcome.duration_s, lo.subs_srt)
-        except Exception as exc:  # noqa: BLE001
-            await update_job(
-                user_id, seeded.render_id, state="error",
-                progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
-            )
-            await update_job(
-                user_id, seeded.parent_id, state="error",
-                progress=jobmod.PROGRESS_QUEUED, stderr=str(exc),
-            )
+        except BaseException as exc:  # noqa: BLE001 — incl. CancelledError (arq job_timeout)
+            # A render killed by the arq job_timeout raises CancelledError, which is
+            # a BaseException — the old ``except Exception`` missed it, so the render
+            # job stayed a zombie at ~88% forever (no error shown). Mark it error so
+            # the UI stops spinning, then re-raise. The already-encoded clips stay on
+            # disk and are reused on the next produce (see render._clip_reusable).
+            msg = _render_failure_message(exc)
+            try:
+                await update_job(
+                    user_id, seeded.render_id, state="error",
+                    progress=jobmod.PROGRESS_QUEUED, stderr=msg,
+                )
+                await update_job(
+                    user_id, seeded.parent_id, state="error",
+                    progress=jobmod.PROGRESS_QUEUED, stderr=msg,
+                )
+            except Exception as upd_exc:  # noqa: BLE001 — never mask the original
+                log.warning("could not mark render error: %s", upd_exc)
             raise
     await update_job(
         user_id, seeded.render_id, state="done", progress=jobmod.PROGRESS_DONE
@@ -990,4 +1071,6 @@ __all__ = [
     "upload_project",
     "run_produce_episode",
     "update_job",
+    "fail_unfinished_jobs",
+    "reconcile_stale_jobs",
 ]
